@@ -334,13 +334,16 @@ fn compile_program(
     });
     let binary = build_dir.join(&out_name);
 
-    let opt = if flags.release { "-O2" } else { "-O0" };
+    let opt = if flags.release { "-O3" } else { "-O0" };
     let mut cmd = Command::new("cc");
     cmd.arg(opt)
         .arg("-std=c11")
         .arg("-I")
         .arg(&build_dir)
         .arg(&c_path);
+    if flags.release {
+        cmd.arg("-march=native");
+    }
     if !flags.freestanding {
         cmd.arg(build_dir.join("leo_rt.c"));
     }

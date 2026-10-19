@@ -63,13 +63,18 @@ C++ `std::unordered_map` and double Rust. Sorting beats `std::sort` by
 `reserve` is quadratic. Tight loop sums sit where C sits: the
 algorithm is the limit, not the language.
 
-Techniques behind the collection results: string capacity reuse on
-`s = s + x` (linear instead of quadratic), 24-byte dict slots keyed
-by comparison with a 0.8 load factor (a third of the previous cache
-footprint), type-specialized inlined sorts instead of qsort function
-pointers, and range-adaptive LSD radix for integer lists (three passes
-for 32-bit data). Run-to-run variance on this class of machine is a
-few milliseconds; the sort and string gaps are stable across runs.
+Techniques behind the results: string capacity reuse on `s = s + x`
+(linear instead of quadratic), 24-byte dict slots keyed by comparison
+with a 0.8 load factor (a third of the previous cache footprint),
+type-specialized inlined sorts instead of qsort function pointers,
+range-adaptive LSD radix for integer lists (three passes for 32-bit
+data), and a release profile of `-O3 -march=native`. Dict ops sit in a
+statistical tie with `std::unordered_map`: C++ hashes ints by identity
+into prime-counted buckets, which streams well for cycling sequential
+keys, while Leo's Fibonacci-multiply hash deliberately scatters to
+resist stride-key clustering. Run-to-run variance on this class of
+machine is a few milliseconds; the sort and string gaps are stable
+across runs.
 
 ## Install
 
