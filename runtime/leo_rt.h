@@ -81,6 +81,8 @@ typedef struct leo_handler {
 
 void leo_raise(leo_str* value);
 
+extern leo_handler* leo_handler_top;
+
 /* ------------------------------------------------------------------ */
 /* String builder for f-strings.                                       */
 /* ------------------------------------------------------------------ */
@@ -227,6 +229,7 @@ void leo_sort_str(leo_str** base, int64_t n);
 #define LEO_EQ_B8(a, b) ((a) == (b))
 #define LEO_EQ_PTR(a, b) ((a) == (b))
 #define LEO_EQ_STR(a, b) leo_str_eq((a), (b))
+#define LEO_EQ_NEVER(a, b) (false)
 #define LEO_INC_STR(x) leo_incref(x)
 #define LEO_DEC_STR(x) leo_str_decref(x)
 
@@ -335,14 +338,14 @@ void leo_sort_str(leo_str** base, int64_t n);
         if (d->slots[i].slot == ord) { VINC(d->slots[i].val); leo_list_##VS##_push(out, d->slots[i].val); } \
     return out;                                                               \
   }                                                                           \
-  static leo_list_l_##KS##_##VS* leo_dict_##KS##_##VS##_items(leo_dict_##KS##_##VS* d) { \
-    leo_list_l_##KS##_##VS* out = leo_list_l_##KS##_##VS##_new();              \
+  static leo_list_t_##KS##_##VS* leo_dict_##KS##_##VS##_items(leo_dict_##KS##_##VS* d) { \
+    leo_list_t_##KS##_##VS* out = leo_list_t_##KS##_##VS##_new();          \
     for (int64_t ord = 0; ord < d->len; ord++)                                 \
       for (int64_t i = 0; i < d->cap; i++)                                     \
         if (d->slots[i].slot == ord) {                                         \
           leo_tuple_##KS##_##VS t = { d->slots[i].key, d->slots[i].val };      \
           KINC(t.a); VINC(t.b);                                                \
-          leo_list_l_##KS##_##VS##_push(out, t);                               \
+          leo_list_t_##KS##_##VS##_push(out, t);                               \
         }                                                                     \
     return out;                                                               \
   }

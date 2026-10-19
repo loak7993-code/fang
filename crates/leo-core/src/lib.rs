@@ -6,6 +6,7 @@ pub mod ast;
 pub mod fmt;
 pub mod lexer;
 pub mod parser;
+pub mod codegen;
 pub mod sema;
 
 pub use ast::*;
@@ -13,6 +14,7 @@ pub use fmt::format_module;
 pub use lexer::{lex_expression, tokenize_kinds, FStrPart, LexError, LexResult, Lexer, TokKind, Token};
 pub use parser::{ParseError, Parser};
 pub use sema::{analyze, Analysis, CallTarget, ConstVal, DictOp, FnInfo, ListOp, SemaError, StructInfo, Ty};
+pub use codegen::{generate, GenOpts, SourceUnit};
 
 /// Lex and parse a source string in one call.
 pub fn parse_source(name: &str, src: &str) -> Result<Module, String> {

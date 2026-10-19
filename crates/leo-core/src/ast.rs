@@ -153,6 +153,8 @@ pub enum StmtKind {
     Break,
     Continue,
     Pass,
+    /// asm("inline assembly")
+    Asm(String),
     Expr(Expr),
     Comment(String),
 }

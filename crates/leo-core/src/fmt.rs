@@ -193,6 +193,7 @@ fn write_stmt(out: &mut String, st: &Stmt, pad: &str) {
             write_expr(out, value, 0);
             out.push('\n');
         }
+        StmtKind::Asm(code) => out.push_str(&format!("{}asm(\"{}\")\n", pad, escape_str(code))),
         StmtKind::Break => out.push_str(&format!("{}break\n", pad)),
         StmtKind::Continue => out.push_str(&format!("{}continue\n", pad)),
         StmtKind::Pass => out.push_str(&format!("{}pass\n", pad)),

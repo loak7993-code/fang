@@ -647,6 +647,7 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
     match &st.kind {
         StmtKind::Comment(_) => None,
         StmtKind::Pass => None,
+        StmtKind::Asm(_) => None,
         StmtKind::Break | StmtKind::Continue => {
             if ctx.loop_depth == 0 {
                 a.err(

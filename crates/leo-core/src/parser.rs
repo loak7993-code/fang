@@ -442,6 +442,20 @@ impl<'a> Parser<'a> {
                 self.finish_line()?;
                 return Ok(Stmt { kind: StmtKind::Pass, span: tok_span(&t) });
             }
+            Ident(n) if n == "asm" && matches!(self.toks.get(self.pos + 1).map(|x| &x.kind), Some(LParen)) => {
+                self.advance(); // asm
+                self.advance(); // (
+                let code = match self.peek_kind().clone() {
+                    TokKind::Str(code) => {
+                        self.advance();
+                        code
+                    }
+                    _ => return perr("asm takes one string of assembly".to_string(), self.peek()),
+                };
+                self.expect(&RParen, "')'")?;
+                self.finish_line()?;
+                return Ok(Stmt { kind: StmtKind::Asm(code), span: tok_span(&t) });
+            }
             _ => {}
         }
 
