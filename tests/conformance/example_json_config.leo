@@ -1,0 +1,21 @@
+# Config from JSON: struct, fs, and json together.
+import json
+import fs
+
+struct Config:
+  host: str
+  port: int
+  debug: bool
+
+fn load(path: str) -> Config:
+  let text = fs.read_file(path)
+  let doc = json.parse(text)
+  let host = json.get(doc, "host").s
+  let port = json.get(doc, "port").i
+  let debug = json.get(doc, "debug").b
+  return Config(host, port, debug)
+
+fn main():
+  fs.write_file("/tmp/leo-cfg.json", "{\"host\": \"localhost\", \"port\": 8080, \"debug\": true}")
+  let cfg = load("/tmp/leo-cfg.json")
+  print(f"serving {cfg.host}:{cfg.port} (debug: {cfg.debug})")

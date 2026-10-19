@@ -36,6 +36,9 @@ export fn find(s: str, needle: str) -> int:
 export fn find_from(s: str, start_at: int, needle: str) -> int:
   return leo_str_find(s, start_at, needle)
 
+export fn slice(s: str, start: int, end: int) -> str:
+  return leo_str_slice(s, start, end)
+
 export fn to_int(s: str) -> int:
   return leo_str_to_i64(s)
 

@@ -99,7 +99,7 @@ fn fstring_basic() {
         leo_core::TokKind::FStr(parts) => {
             assert_eq!(parts.len(), 3);
             assert_eq!(parts[0], leo_core::FStrPart::Literal("hi ".into()));
-            assert!(matches!(&parts[1], leo_core::FStrPart::Expr(text, toks) if text == "name" && toks.len() == 2));
+            assert!(matches!(&parts[1], leo_core::FStrPart::Expr(text, toks, _) if text == "name" && toks.len() == 2));
             assert_eq!(parts[2], leo_core::FStrPart::Literal("!".into()));
         }
         other => panic!("expected f-string, got {:?}", other),
@@ -123,7 +123,7 @@ fn fstring_nested_expr_with_call() {
     let k = kinds("let s = f\"v={xs.len()}\"\n");
     match &k[3] {
         leo_core::TokKind::FStr(parts) => {
-            assert!(matches!(&parts[1], leo_core::FStrPart::Expr(_, toks) if toks.len() >= 4));
+            assert!(matches!(&parts[1], leo_core::FStrPart::Expr(_, toks, _) if toks.len() >= 4));
         }
         other => panic!("expected f-string, got {:?}", other),
     }

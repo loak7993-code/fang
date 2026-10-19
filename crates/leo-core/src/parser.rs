@@ -677,35 +677,36 @@ impl<'a> Parser<'a> {
     fn parse_postfix(&mut self) -> PResult<Expr> {
         let mut e = self.parse_primary()?;
         loop {
-            let sp = e.span;
             match self.peek_kind().clone() {
                 LParen => {
-                    self.advance();
+                    // The call node carries the '(' span so every postfix
+                    // expression has a unique span for the type table.
+                    let paren = self.advance();
                     let args = self.arg_list()?;
                     e = Expr {
                         kind: ExprKind::Call(Box::new(e), args),
-                        span: sp,
+                        span: tok_span(&paren),
                     };
                 }
                 Dot => {
-                    self.advance();
+                    let dot = self.advance();
                     let (name, _) = self.ident_tok("a name after '.'")?;
                     if self.at(&LParen) {
-                        self.advance();
+                        let paren = self.advance();
                         let args = self.arg_list()?;
                         e = Expr {
                             kind: ExprKind::Method(Box::new(e), name, args),
-                            span: sp,
+                            span: tok_span(&paren),
                         };
                     } else {
                         e = Expr {
                             kind: ExprKind::Field(Box::new(e), name),
-                            span: sp,
+                            span: tok_span(&dot),
                         };
                     }
                 }
                 LBracket => {
-                    self.advance();
+                    let bracket = self.advance();
                     // Slice [a:b] or index [i].
                     let start = if self.at(&Colon) {
                         None
@@ -721,7 +722,7 @@ impl<'a> Parser<'a> {
                         self.expect(&RBracket, "']'")?;
                         e = Expr {
                             kind: ExprKind::Slice(Box::new(e), start.map(Box::new), end.map(Box::new)),
-                            span: sp,
+                            span: tok_span(&bracket),
                         };
                     } else {
                         let idx = match start {
@@ -737,7 +738,7 @@ impl<'a> Parser<'a> {
                         self.expect(&RBracket, "']'")?;
                         e = Expr {
                             kind: ExprKind::Index(Box::new(e), Box::new(idx)),
-                            span: sp,
+                            span: tok_span(&bracket),
                         };
                     }
                 }
@@ -784,10 +785,10 @@ impl<'a> Parser<'a> {
                 for p in parts {
                     match p {
                         FStrPart::Literal(l) => ast_parts.push(FStrPartAst::Lit(l)),
-                        FStrPart::Expr(text, toks) => {
+                        FStrPart::Expr(text, toks, rel) => {
                             let mut sub = Parser::new(&toks);
                             let mut e = sub.expr()?;
-                            shift_spans(&mut e, t.start + 1);
+                            shift_spans(&mut e, t.start + rel + 1);
                             // The whole interior must be one expression.
                             if !matches!(sub.peek_kind(), Eof | Newline) {
                                 return perr(
@@ -906,6 +907,15 @@ impl<'a> Parser<'a> {
     // --- types ---
 
     pub fn parse_type(&mut self) -> PResult<Type> {
+        // Tuple type: (A, B)
+        if self.at(&LParen) {
+            self.advance();
+            let a = self.parse_type()?;
+            self.expect(&Comma, "',' between the tuple element types")?;
+            let b = self.parse_type()?;
+            self.expect(&RParen, "')'")?;
+            return Ok(Type::Tuple(Box::new(a), Box::new(b)));
+        }
         let (name, t) = self.ident_tok("a type")?;
         match name.as_str() {
             "int" => Ok(Type::Int),

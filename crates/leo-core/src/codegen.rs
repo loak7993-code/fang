@@ -135,8 +135,9 @@ impl<'a> Gen<'a> {
         }
         writeln!(self.out).unwrap();
 
-        // String pool.
-        if !self.opts.freestanding && !self.pool.is_empty() {
+        // String pool: the init function is always emitted because main
+        // always calls it; an empty pool yields an empty body.
+        if !self.opts.freestanding {
             for (i, _unused_text) in self.pool_order.iter().enumerate() {
                 writeln!(self.out, "static leo_str* L{};", i).unwrap();
             }
@@ -935,9 +936,14 @@ impl<'a> FnGen<'a> {
             StmtKind::Expr(e) => {
                 self.line_of(st);
                 let (code, t, fresh) = self.gen_expr(e, g);
-                let _ = code;
+                // The expression's value is discarded; side-effect calls
+                // (void fns) must still run.
                 if fresh && g.is_rc(&t) {
-                    self.has_temps.push((code, t.clone()));
+                    let tmp = format!("__t{}", self.temp());
+                    self.w(&format!("{} {} = {};", g.ctype(&t), tmp, code));
+                    self.has_temps.push((tmp, t.clone()));
+                } else if code != "0" {
+                    self.w(&format!("{};", code));
                 }
                 self.flush_temps(g);
             }
@@ -957,35 +963,22 @@ impl<'a> FnGen<'a> {
         self.indent += 1;
         self.stmts(then, g);
         self.indent -= 1;
-        let mut wrote_else = false;
         for (ec, eb) in elifs {
-            self.w("} else {");
-            self.indent += 1;
+            // Bool conditions never materialize temporaries, so the elif
+            // condition is safe inline in `else if`.
             let (c2, _) = self.gen_cond(ec, g);
-            self.indent -= 1;
-            self.w(&format!("if ({}) {{", c2));
+            self.w(&format!("}} else if ({}) {{", c2));
             self.indent += 1;
             self.stmts(eb, g);
             self.indent -= 1;
-            wrote_else = true;
         }
-        if wrote_else {
-            if let Some(eb) = els {
-                self.w("} else {");
-                self.indent += 1;
-                self.stmts(eb, g);
-                self.indent -= 1;
-            }
-            self.w("}");
-        } else if let Some(eb) = els {
+        if let Some(eb) = els {
             self.w("} else {");
             self.indent += 1;
             self.stmts(eb, g);
             self.indent -= 1;
-            self.w("}");
-        } else {
-            self.w("}");
         }
+        self.w("}");
     }
 
     fn gen_cond(&mut self, e: &Expr, g: &Gen) -> (String, Ty) {
@@ -1484,6 +1477,33 @@ impl<'a> FnGen<'a> {
                         Ty::Int,
                         false,
                     ),
+                    (Type::Ptr, Ty::Str | Ty::List(_) | Ty::Dict(_, _)) => {
+                        // Storing an RC value behind a raw pointer: take a
+                        // keep-alive reference. Raw pointer fields are never
+                        // released, so the value lives for the process
+                        // lifetime (documented model for ptr-cast holders).
+                        self.w(&format!("leo_incref((void*)({}));", code));
+                        (
+                            format!("((void*)({}))", code),
+                            Ty::Ptr,
+                            false,
+                        )
+                    }
+                    (Type::Str, Ty::Ptr) if matches!(t, Type::Str) => (
+                        format!("((leo_str*)({}))", code),
+                        Ty::Str,
+                        false,
+                    ),
+                    (Type::List(_), Ty::Ptr) | (Type::Dict(_, _), Ty::Ptr) => {
+                        let target =
+                            self.a.ty[&(self.module.clone(), e.span.start)].clone();
+                        let cty = g.ctype(&target);
+                        (
+                            format!("(({})({}))", cty, code),
+                            target,
+                            false,
+                        )
+                    }
                     _ => (code, it.clone(), false),
                 }
             }
@@ -1873,6 +1893,14 @@ impl<'a> FnGen<'a> {
                         ("0".into(), Ty::Void, false)
                     }
                 }
+            }
+            Some(CallTarget::BuiltinFloat) => {
+                let (code, _, _) = self.gen_expr(&args[0], g);
+                (format!("((double)({}))", code), Ty::Float, false)
+            }
+            Some(CallTarget::BuiltinInt) => {
+                let (code, _, _) = self.gen_expr(&args[0], g);
+                (format!("((int64_t)({}))", code), Ty::Int, false)
             }
             Some(CallTarget::ToCStr) => {
                 let (code, _, _) = self.gen_expr(callee_as_recv(callee), g);

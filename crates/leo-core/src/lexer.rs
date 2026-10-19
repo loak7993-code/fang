@@ -9,8 +9,10 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub enum FStrPart {
     Literal(String),
-    /// Raw expression text plus its lexed token stream.
-    Expr(String, Vec<Token>),
+    /// Raw expression text, its lexed token stream, and the byte offset of
+    /// the '{' relative to the f-string token start. The parser uses it to
+    /// give every part a unique span shift.
+    Expr(String, Vec<Token>, u32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -483,6 +485,7 @@ impl<'a> Lexer<'a> {
                     }
                     // Expression part: collect until the matching close brace,
                     // respecting nesting and embedded strings.
+                    let expr_rel = (self.pos - start as usize) as u32;
                     self.advance(); // '{'
                     let expr_start = self.pos;
                     let mut brace = 1u32;
@@ -518,7 +521,7 @@ impl<'a> Lexer<'a> {
                         e.line += line - 1;
                         e
                     })?;
-                    parts.push(FStrPart::Expr(expr_text, toks));
+                    parts.push(FStrPart::Expr(expr_text, toks, expr_rel));
                 }
                 b'}' if fstring => {
                     if self.peek2() == b'}' {

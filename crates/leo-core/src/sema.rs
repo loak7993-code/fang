@@ -143,6 +143,10 @@ pub enum CallTarget {
     ToCStr,
     /// n.to_str() -> str on int/float/bool
     ToStr,
+    /// float(int)
+    BuiltinFloat,
+    /// int(float)
+    BuiltinInt,
 }
 
 pub struct Analysis {
@@ -662,6 +666,8 @@ fn block_ret_info(
 fn stmt_guarantees_return(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> bool {
     match &st.kind {
         StmtKind::Return(_) => true,
+        // raise never falls through: the statement unwinds.
+        StmtKind::Raise(_) => true,
         StmtKind::If { then, elifs, els, .. } => {
             let Some(els) = els else { return false };
             if !block_guarantees(then, module, a, ctx) {
@@ -944,10 +950,11 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
                 );
             }
             ctx.loop_depth += 1;
-            infer_block(body, module, a, ctx, ctx.ret.clone(), true);
+            let sub = block_ret_info(body, module, a, ctx);
             ctx.loop_depth -= 1;
-            // A while loop can fall through; it never guarantees a return.
-            None
+            // A while loop can fall through; it never guarantees a return,
+            // but returns inside it still count toward the fn's type.
+            sub.seen
         }
         StmtKind::For { binders, iter, body } => {
             let binder_tys: Vec<Ty> = match iter {
@@ -1022,24 +1029,44 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
                 ctx.declare(b, t.clone());
             }
             ctx.loop_depth += 1;
-            infer_block(body, module, a, ctx, ctx.ret.clone(), true);
+            let sub = block_ret_info(body, module, a, ctx);
             ctx.loop_depth -= 1;
             ctx.scopes.pop();
-            // Loops fall through; they never guarantee a return.
-            None
+            // Loops fall through; they never guarantee a return, but
+            // returns inside them still count toward the fn's type.
+            sub.seen
         }
         StmtKind::Try { body, binder, handler } => {
-            infer_block(body, module, a, ctx, ctx.ret.clone(), true);
+            let mut sub = block_ret_info(body, module, a, ctx);
             if let Some(b) = binder {
                 a.catch_ty.insert((module.to_string(), st.span.start), Ty::Any);
                 ctx.scopes.push(HashMap::new());
                 ctx.declare(b, Ty::Any);
-                infer_block(handler, module, a, ctx, ctx.ret.clone(), true);
+                let h = block_ret_info(handler, module, a, ctx);
+                if h.seen.is_some() && sub.seen.is_none() {
+                    sub.seen = h.seen;
+                } else if let (Some(x), Some(y)) = (&sub.seen, &h.seen) {
+                    if x != y && *x != Ty::Err && *y != Ty::Err {
+                        a.errors.push(SemaError {
+                            msg: format!(
+                                "return type mismatch: try gives {}, except gives {}",
+                                x.show(a),
+                                y.show(a)
+                            ),
+                            line: st.span.line,
+                            col: st.span.col,
+                            module: module.to_string(),
+                        });
+                    }
+                }
                 ctx.scopes.pop();
             } else {
-                infer_block(handler, module, a, ctx, ctx.ret.clone(), true);
+                let h = block_ret_info(handler, module, a, ctx);
+                if h.seen.is_some() && sub.seen.is_none() {
+                    sub.seen = h.seen;
+                }
             }
-            None
+            sub.seen
         }
         StmtKind::Raise(value) => {
             let t = infer_expr(value, module, a, ctx);
@@ -1415,12 +1442,16 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
         ExprKind::Cast(t, inner) => {
             let it = infer_expr(inner, module, a, ctx);
             let target = conv_type(t, module, a);
+            // int <-> ptr numeric casts, identity casts, and pointer
+            // reinterpretation between ptr and RC types (str, list, dict).
             let ok = (target == Ty::Ptr && it == Ty::Int)
                 || (target == Ty::Int && it == Ty::Ptr)
-                || target == it;
+                || target == it
+                || (target == Ty::Ptr && matches!(it, Ty::Str | Ty::List(_) | Ty::Dict(_, _)))
+                || (it == Ty::Ptr && matches!(target, Ty::Str | Ty::List(_) | Ty::Dict(_, _)));
             if !ok {
                 a.err(
-                    "cast converts between ptr and int, or to the same type".to_string(),
+                    "cast converts int <-> ptr, or reinterprets between ptr and str/list/dict".to_string(),
                     e.span,
                     module,
                 );
@@ -1623,6 +1654,28 @@ fn infer_call(
                     }
                 }
                 a.call.insert((module.to_string(), call_expr.span.start), CallTarget::BuiltinLen);
+                return Ty::Int;
+            }
+            "float" => {
+                if args.len() != 1 {
+                    a.err("float takes one int".to_string(), call_expr.span, module);
+                }
+                let t = infer_expr(&args[0], module, a, ctx);
+                if t != Ty::Int {
+                    a.err(format!("float converts an int, got {}", t.show(a)), call_expr.span, module);
+                }
+                a.call.insert((module.to_string(), call_expr.span.start), CallTarget::BuiltinFloat);
+                return Ty::Float;
+            }
+            "int" => {
+                if args.len() != 1 {
+                    a.err("int takes one float".to_string(), call_expr.span, module);
+                }
+                let t = infer_expr(&args[0], module, a, ctx);
+                if t != Ty::Float {
+                    a.err(format!("int converts a float, got {}", t.show(a)), call_expr.span, module);
+                }
+                a.call.insert((module.to_string(), call_expr.span.start), CallTarget::BuiltinInt);
                 return Ty::Int;
             }
             "assert" => {
