@@ -1,0 +1,8 @@
+[package]
+name = "leo-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Compiler core for the Leo programming language: lexer, parser, sema, codegen."
+
+[dependencies]

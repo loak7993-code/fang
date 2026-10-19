@@ -1,0 +1,13 @@
+[package]
+name = "leo-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The leo binary: run, build, repl, fmt, test, add."
+
+[[bin]]
+name = "leo"
+path = "src/main.rs"
+
+[dependencies]
+leo-core = { path = "../leo-core" }

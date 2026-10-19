@@ -1,0 +1,25 @@
+import math
+import utils from "./utils.leo"
+
+let MAX = 100
+
+struct Point:
+  x: float
+  y: float
+
+fn Point.length(self) -> float:
+  return math.sqrt(self.x * self.x + self.y * self.y)
+
+fn fib(n: int):
+  if n < 2:
+    return n
+  return fib(n - 1) + fib(n - 2)
+
+fn main():
+  pts = [Point(1.0, 2.0), Point(3.0, 4.0)]
+  total = 0
+  for p in pts:
+    print(f"len = {p.length()}")
+  for i in 0..35:
+    total = total + fib(i)
+  print(f"sum = {total}")
