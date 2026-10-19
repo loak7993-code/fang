@@ -1,6 +1,6 @@
 //! Parser tests: AST shapes, error paths, and formatter round-trips.
 
-use leo_core::{parse_source, Lexer, Parser};
+use leo_core::parse_source;
 use leo_core::ast::*;
 
 fn parse(src: &str) -> Module {
@@ -211,7 +211,7 @@ fn comment_statements_preserved() {
 fn all_fixture_files_parse() {
     for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures")).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().map_or(false, |e| e == "leo") {
+        if path.extension().is_some_and(|e| e == "leo") {
             let src = std::fs::read_to_string(&path).unwrap();
             parse_source("fixture", &src)
                 .unwrap_or_else(|e| panic!("{} failed to parse: {}", path.display(), e));
@@ -233,7 +233,7 @@ fn roundtrip(src: &str) {
 fn formatter_fixpoint_on_fixtures() {
     for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures")).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().map_or(false, |e| e == "leo") {
+        if path.extension().is_some_and(|e| e == "leo") {
             let src = std::fs::read_to_string(&path).unwrap();
             roundtrip(&src);
         }
