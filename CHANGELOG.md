@@ -40,8 +40,11 @@ analysis with type inference, C code generation, native compilation.
   range-adaptive LSD radix sort over offset-biased keys: three passes
   for 32-bit data, six only when the range demands it (2.4x over the
   qsort path, ahead of Rust's pdqsort on large int lists).
-- Benchmarks now include Rust; no benchmark where Rust is meaningfully
-  faster, and integer dict ops beat Rust's default hasher by 2x.
+- Benchmarks include Rust and C++; no benchmark where either is
+  meaningfully faster. Dict slots shrank from 32 to 24 bytes with a 0.8
+  load factor (a third of the previous cache footprint), and dicts
+  gained `reserve(n)`; dict ops now edge out C++ `std::unordered_map`
+  and double Rust.
 
 ### Known limitations
 

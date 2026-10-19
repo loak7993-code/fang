@@ -247,18 +247,18 @@ void leo_sort_str(leo_str** base, int64_t n);
    stamps and the tuple stamp to already exist in this translation
    unit; the codegen guarantees that ordering. */
 #define LEO_DICT_DEFINE(KS, VS, K, V, KHASH, KEQ, DEC_K, DEC_V, KINC, VINC)   \
-  typedef struct { uint64_t hash; int64_t slot; K key; V val; } leo_dslot_##KS##_##VS; \
+  typedef struct { int64_t order; K key; V val; } leo_dslot_##KS##_##VS; \
   typedef struct { int64_t rc, len, cap; leo_dslot_##KS##_##VS* slots; } leo_dict_##KS##_##VS; \
   static leo_dict_##KS##_##VS* leo_dict_##KS##_##VS##_new(void) {             \
     leo_dict_##KS##_##VS* d = (leo_dict_##KS##_##VS*)malloc(sizeof(*d));     \
     d->rc = 1; d->len = 0; d->cap = 8;                                        \
     d->slots = (leo_dslot_##KS##_##VS*)calloc(8, sizeof(*d->slots));           \
-    for (int64_t i = 0; i < 8; i++) d->slots[i].slot = -1;                    \
+    for (int64_t i = 0; i < 8; i++) d->slots[i].order = -1;                     \
     return d;                                                                 \
   }                                                                           \
   static void leo_dict_##KS##_##VS##_destroy(leo_dict_##KS##_##VS* d) {       \
     for (int64_t i = 0; i < d->cap; i++)                                      \
-      if (d->slots[i].slot >= 0) { DEC_K(d->slots[i].key); DEC_V(d->slots[i].val); } \
+      if (d->slots[i].order >= 0) { DEC_K(d->slots[i].key); DEC_V(d->slots[i].val); } \
     free(d->slots); free(d);                                                   \
   }                                                                           \
   static inline void leo_dict_##KS##_##VS##_decref(leo_dict_##KS##_##VS* d) { \
@@ -267,29 +267,32 @@ void leo_sort_str(leo_str** base, int64_t n);
   static void leo_dict_##KS##_##VS##_grow(leo_dict_##KS##_##VS* d) {          \
     int64_t ncap = d->cap * 2;                                                \
     leo_dslot_##KS##_##VS* ns = (leo_dslot_##KS##_##VS*)calloc((size_t)ncap, sizeof(*ns)); \
-    for (int64_t i = 0; i < ncap; i++) ns[i].slot = -1;                       \
+    for (int64_t i = 0; i < ncap; i++) ns[i].order = -1;                        \
     int64_t next = 0;                                                          \
     for (int64_t i = 0; i < d->cap; i++) {                                     \
-      if (d->slots[i].slot >= 0) {                                             \
-        uint64_t h = d->slots[i].hash;                                         \
+      if (d->slots[i].order >= 0) {                                           \
+        uint64_t h = (uint64_t)(KHASH(d->slots[i].key));                        \
         int64_t j = (int64_t)(h & (uint64_t)(ncap - 1));                       \
-        while (ns[j].slot != -1) j = (j + 1) & (ncap - 1);                     \
-        ns[j] = d->slots[i]; ns[j].slot = next++;                              \
+        while (ns[j].order != -1) j = (j + 1) & (ncap - 1);                    \
+        ns[j] = d->slots[i]; ns[j].order = next++;                             \
       }                                                                       \
     }                                                                          \
     free(d->slots); d->slots = ns; d->cap = ncap;                              \
   }                                                                            \
+  static void leo_dict_##KS##_##VS##_reserve(leo_dict_##KS##_##VS* d, int64_t n) { \
+    while (d->cap * 8 < (n + 1) * 10) leo_dict_##KS##_##VS##_grow(d);         \
+  }                                                                           \
   static void leo_dict_##KS##_##VS##_set(leo_dict_##KS##_##VS* d, K k, V v) { \
     /* Tombstones count toward the load factor so a churned table grows */   \
     /* instead of filling its probe space.                                   */ \
-    if ((d->len + 1) * 10 >= d->cap * 7) leo_dict_##KS##_##VS##_grow(d);      \
+    if ((d->len + 1) * 10 >= d->cap * 8) leo_dict_##KS##_##VS##_grow(d);      \
     uint64_t h = (uint64_t)(KHASH(k));                                        \
     int64_t j = (int64_t)(h & (uint64_t)(d->cap - 1));                        \
     int64_t reuse = -1;                                                        \
-    while (d->slots[j].slot != -1) {                                           \
-      if (d->slots[j].slot == -2) {                                           \
+    while (d->slots[j].order != -1) {                                          \
+      if (d->slots[j].order == -2) {                                           \
         if (reuse < 0) reuse = j;                                             \
-      } else if (d->slots[j].hash == h && KEQ(d->slots[j].key, k)) {           \
+      } else if (KEQ(d->slots[j].key, k)) {                                    \
         DEC_V(d->slots[j].val);                                               \
         d->slots[j].val = v;                                                  \
         return;                                                               \
@@ -297,18 +300,18 @@ void leo_sort_str(leo_str** base, int64_t n);
       j = (j + 1) & (d->cap - 1);                                             \
     }                                                                         \
     if (reuse >= 0) {                                                         \
-      d->slots[reuse].hash = h; KINC(k); d->slots[reuse].key = k;             \
-      d->slots[reuse].val = v; d->slots[reuse].slot = d->len++;               \
+      KINC(k); d->slots[reuse].key = k;                                        \
+      d->slots[reuse].val = v; d->slots[reuse].order = d->len++;               \
       return;                                                                 \
     }                                                                         \
-    d->slots[j].hash = h; KINC(k); d->slots[j].key = k; d->slots[j].val = v;  \
-    d->slots[j].slot = d->len++;                                              \
+    KINC(k); d->slots[j].key = k; d->slots[j].val = v;                        \
+    d->slots[j].order = d->len++;                                              \
   }                                                                           \
   static bool leo_dict_##KS##_##VS##_contains(leo_dict_##KS##_##VS* d, K k) { \
     uint64_t h = (uint64_t)(KHASH(k));                                        \
     int64_t j = (int64_t)(h & (uint64_t)(d->cap - 1));                        \
-    while (d->slots[j].slot != -1) {                                           \
-      if (d->slots[j].hash == h && KEQ(d->slots[j].key, k)) return true;       \
+    while (d->slots[j].order != -1) {                                          \
+      if (d->slots[j].order != -2 && KEQ(d->slots[j].key, k)) return true;     \
       j = (j + 1) & (d->cap - 1);                                             \
     }                                                                         \
     return false;                                                             \
@@ -316,8 +319,8 @@ void leo_sort_str(leo_str** base, int64_t n);
   static V leo_dict_##KS##_##VS##_get(leo_dict_##KS##_##VS* d, K k, V def) {  \
     uint64_t h = (uint64_t)(KHASH(k));                                        \
     int64_t j = (int64_t)(h & (uint64_t)(d->cap - 1));                        \
-    while (d->slots[j].slot != -1) {                                           \
-      if (d->slots[j].hash == h && KEQ(d->slots[j].key, k)) return d->slots[j].val; \
+    while (d->slots[j].order != -1) {                                          \
+      if (d->slots[j].order != -2 && KEQ(d->slots[j].key, k)) return d->slots[j].val; \
       j = (j + 1) & (d->cap - 1);                                             \
     }                                                                         \
     return def;                                                               \
@@ -325,15 +328,15 @@ void leo_sort_str(leo_str** base, int64_t n);
   static bool leo_dict_##KS##_##VS##_remove(leo_dict_##KS##_##VS* d, K k) {   \
     uint64_t h = (uint64_t)(KHASH(k));                                        \
     int64_t j = (int64_t)(h & (uint64_t)(d->cap - 1));                        \
-    while (d->slots[j].slot != -1) {                                           \
-      if (d->slots[j].hash == h && KEQ(d->slots[j].key, k)) {                 \
+    while (d->slots[j].order != -1) {                                          \
+      if (d->slots[j].order >= 0 && KEQ(d->slots[j].key, k)) {                 \
         DEC_K(d->slots[j].key); DEC_V(d->slots[j].val);                       \
-        int64_t hole = d->slots[j].slot;                                       \
-        d->slots[j].slot = -2;                                                 \
+        int64_t hole = d->slots[j].order;                                      \
+        d->slots[j].order = -2;                                                 \
         for (int64_t i = 0; i < d->cap; i++)                                   \
-          if (d->slots[i].slot > hole) d->slots[i].slot--;                     \
+          if (d->slots[i].order > hole) d->slots[i].order--;                   \
         d->len--;                                                             \
-        return true;                                                          \
+        return true;                                                           \
       }                                                                       \
       j = (j + 1) & (d->cap - 1);                                             \
     }                                                                         \
@@ -343,21 +346,21 @@ void leo_sort_str(leo_str** base, int64_t n);
     leo_list_##KS* out = leo_list_##KS##_new();                               \
     for (int64_t ord = 0; ord < d->len; ord++)                                 \
       for (int64_t i = 0; i < d->cap; i++)                                     \
-        if (d->slots[i].slot == ord) { KINC(d->slots[i].key); leo_list_##KS##_push(out, d->slots[i].key); } \
+        if (d->slots[i].order == ord) { KINC(d->slots[i].key); leo_list_##KS##_push(out, d->slots[i].key); } \
     return out;                                                               \
   }                                                                           \
   static leo_list_##VS* leo_dict_##KS##_##VS##_values(leo_dict_##KS##_##VS* d) { \
     leo_list_##VS* out = leo_list_##VS##_new();                                \
     for (int64_t ord = 0; ord < d->len; ord++)                                 \
       for (int64_t i = 0; i < d->cap; i++)                                     \
-        if (d->slots[i].slot == ord) { VINC(d->slots[i].val); leo_list_##VS##_push(out, d->slots[i].val); } \
+        if (d->slots[i].order == ord) { VINC(d->slots[i].val); leo_list_##VS##_push(out, d->slots[i].val); } \
     return out;                                                               \
   }                                                                           \
   static leo_list_t_##KS##_##VS* leo_dict_##KS##_##VS##_items(leo_dict_##KS##_##VS* d) { \
-    leo_list_t_##KS##_##VS* out = leo_list_t_##KS##_##VS##_new();          \
+    leo_list_t_##KS##_##VS* out = leo_list_t_##KS##_##VS##_new();              \
     for (int64_t ord = 0; ord < d->len; ord++)                                 \
       for (int64_t i = 0; i < d->cap; i++)                                     \
-        if (d->slots[i].slot == ord) {                                         \
+        if (d->slots[i].order == ord) {                                         \
           leo_tuple_##KS##_##VS t = { d->slots[i].key, d->slots[i].val };      \
           KINC(t.a); VINC(t.b);                                                \
           leo_list_t_##KS##_##VS##_push(out, t);                               \

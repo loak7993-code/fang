@@ -120,6 +120,7 @@ pub enum ListOp {
 pub enum DictOp {
     Get,
     Set,
+    Reserve,
     Keys,
     Values,
     Items,
@@ -1940,6 +1941,7 @@ fn infer_method(
                 "items" => Some(DictOp::Items),
                 "contains" => Some(DictOp::Contains),
                 "remove" => Some(DictOp::Remove),
+                "reserve" => Some(DictOp::Reserve),
                 _ => None,
             };
             match op {
@@ -1948,11 +1950,13 @@ fn infer_method(
                         DictOp::Get => vec![k.as_ref().clone(), v.as_ref().clone()],
                         DictOp::Set => vec![k.as_ref().clone(), v.as_ref().clone()],
                         DictOp::Contains | DictOp::Remove => vec![k.as_ref().clone()],
+                        DictOp::Reserve => vec![Ty::Int],
                         _ => vec![],
                     };
                     let arity_ok = match op {
                         DictOp::Get | DictOp::Set => args.len() == 2,
                         DictOp::Contains | DictOp::Remove => args.len() == 1,
+                        DictOp::Reserve => args.len() == 1,
                         _ => args.is_empty(),
                     };
                     if !arity_ok {

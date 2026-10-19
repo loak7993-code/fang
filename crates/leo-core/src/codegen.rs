@@ -1900,6 +1900,14 @@ impl<'a> FnGen<'a> {
                             false,
                         )
                     }
+                    DictOp::Reserve => {
+                        let (nc, _, _) = self.gen_expr(&args[0], g);
+                        self.w(&format!(
+                            "leo_dict_{}_{}_reserve({}, {});",
+                            ks, vs, recv_code, nc
+                        ));
+                        ("0".into(), Ty::Void, false)
+                    }
                     DictOp::Remove => {
                         let (kc, _, kfr) = self.gen_expr(&args[0], g);
                         if g.is_rc(&kt) && !kfr {

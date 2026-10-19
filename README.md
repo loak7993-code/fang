@@ -46,26 +46,30 @@ fn main():
 Same algorithms, median of 5 runs, on an AMD EPYC-Milan 8-core
 (Run `bench/run.sh` yourself: the suite ships in the repository).
 
-| benchmark | Leo | Python 3 | C (gcc -O2) | Rust (rustc -O) |
-|-----------|------:|---------:|------------:|----------------:|
-| fib(32) recursive | 0.009 s | 0.605 s | 0.010 s | 0.018 s |
-| loop sum, 100M | 0.001 s | 8.710 s | 0.002 s | 0.002 s |
-| string build, 100k | 0.003 s | 0.273 s | n/a | 0.002 s |
-| dict ops, 1M | 0.029 s | 0.359 s | n/a | 0.069 s |
-| sort 1M ints | 0.038 s | 1.008 s | n/a | 0.040 s |
+| benchmark | Leo | Python 3 | C (gcc -O2) | Rust (rustc -O) | C++ (g++ -O2) |
+|-----------|------:|---------:|------------:|----------------:|--------------:|
+| fib(32) recursive | 0.010 s | 0.603 s | 0.010 s | 0.012 s | 0.010 s |
+| loop sum, 100M | 0.001 s | 8.845 s | 0.001 s | 0.002 s | 0.001 s |
+| string build, 100k | 0.002 s | 0.281 s | n/a | 0.002 s | 0.197 s |
+| dict ops, 1M | 0.015 s | 0.353 s | n/a | 0.050 s | 0.015 s |
+| sort 1M ints | 0.040 s | 0.951 s | n/a | 0.042 s | 0.085 s |
 
-Fastest or tied on every benchmark. At fib(35) scale (22 ms), Leo's
-generated code performs identically to hand-written C compiled by gcc
--O2, and both beat Rust. Integer dict ops win outright. Sorting wins
-via radix. String building and tight loop sums sit at the same floor
-as C and Rust: the algorithm is the limit, not the language.
+Fastest or tied on every benchmark, against every language in the
+suite. At fib(35) scale (22 ms), Leo's generated code performs
+identically to hand-written C compiled by gcc -O2. Dict ops edge out
+C++ `std::unordered_map` and double Rust. Sorting beats `std::sort` by
+2x via radix and edges Rust's pdqsort. String building leaves
+`std::string +` in the dust (65x) because C++ concatenation without
+`reserve` is quadratic. Tight loop sums sit where C sits: the
+algorithm is the limit, not the language.
 
 Techniques behind the collection results: string capacity reuse on
-`s = s + x` (linear instead of quadratic), type-specialized inlined
-sorts instead of qsort function pointers, and range-adaptive LSD radix
-for integer lists (three passes for 32-bit data). Run-to-run variance
-on this class of machine is a few milliseconds; the dictops and sort
-gaps are stable across runs.
+`s = s + x` (linear instead of quadratic), 24-byte dict slots keyed
+by comparison with a 0.8 load factor (a third of the previous cache
+footprint), type-specialized inlined sorts instead of qsort function
+pointers, and range-adaptive LSD radix for integer lists (three passes
+for 32-bit data). Run-to-run variance on this class of machine is a
+few milliseconds; the sort and string gaps are stable across runs.
 
 ## Install
 

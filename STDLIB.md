@@ -82,6 +82,7 @@ fn main():
 |--------|------|
 | `get(k, default)` | `-> V` |
 | `set(k, v)` | insert or update |
+| `reserve(n)` | grow capacity to fit n entries without rehash churn |
 | `keys()` | `-> list[K]` insertion order |
 | `values()` | `-> list[V]` |
 | `items()` | `-> list[(K, V)]` |
