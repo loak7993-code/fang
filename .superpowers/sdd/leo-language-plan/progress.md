@@ -17,3 +17,13 @@ Task M2: complete (parser full grammar, extern fn items, formatter fixpoint prop
   never dedent. Documented in leo fmt help later.
   Ruling: extern `str` params map to leo_str* (runtime native); C char*
   interop goes through ptr + cast + s.to_cstr() bridge. SPEC documents.
+
+Task M3: complete (sema: inference, method sugar, instantiation records; 66 tests)
+
+  Ruling (Panda, mid-build): "C-like" means C's reach (kernels, OS,
+  desktop, mobile), not C syntax. Changes: (1) freestanding build mode,
+  --freestanding --target triple, value-types only, -nostdlib, no
+  runtime; (2) asm("...") statement in v0.1, __asm__ volatile passthrough;
+  (3) cross-compile target passthrough to cc. The transpile-to-C
+  architecture already enables all three. Cost if wrong: asm passthrough
+  is raw by design; freestanding has no heap types (documented, like C).
