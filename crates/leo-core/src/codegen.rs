@@ -378,10 +378,11 @@ impl<'a> Gen<'a> {
             } else {
                 conds.join(" && ")
             };
+            let eq_name = format!("{}_eq", sname);
             writeln!(
                 self.out,
                 "static inline bool {}({} a, {} b) {{\n    return {};\n}}",
-                format!("{}_eq", sname),
+                eq_name,
                 sname,
                 sname,
                 cond
@@ -1002,7 +1003,7 @@ impl<'a> FnGen<'a> {
 
     fn gen_tuple_expr(&mut self, e: &Expr, g: &Gen) -> (String, String) {
         // Returns C lvalue expressions for a and b of a tuple value.
-        let (code, t, fresh) = self.gen_expr(e, g);
+        let (code, t, _fresh) = self.gen_expr(e, g);
         let tmp = format!("__tup{}", self.temp());
         self.w(&format!("{} {} = {};", g.ctype(&t), tmp, code));
         if g.is_rc(&t) {
