@@ -91,9 +91,9 @@ pre {
   padding: 22px; overflow-x: auto; font-size: 13.5px; line-height: 1.65;
 }
 pre .c { color: #6B7280; }
-pre .k { color: #C084FC; }
-pre .s { color: #7DD3FC; }
-pre .n { color: #FDBA74; }
+pre .k { color: #6FA8F5; }
+pre .s { color: #9BB8D3; }
+pre .n { color: #D4D4D8; }
 
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { text-align: left; color: var(--text-2); font-weight: 500; font-size: 13px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
@@ -126,6 +126,12 @@ footer { border-top: 1px solid var(--line); padding: 64px 0 80px; margin-top: 40
 @media (max-width: 720px) {
   h1 { font-size: 40px; }
   .foot-grid { grid-template-columns: 1fr 1fr; }
+  nav .wrap > a { display: none; }
+  nav .wrap > a.brand { display: flex; }
+  nav .wrap > a:last-child { display: inline; white-space: nowrap; }
+  .cta .btn { width: 100%; justify-content: center; }
+  .tbl { padding: 2px; }
+  td, th { padding: 9px 8px; font-size: 13px; }
 }
 </style>
 </head>
