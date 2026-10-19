@@ -8,7 +8,7 @@ fn Point.length(self) -> float:
 fn math_sqrt(v: float) -> float:
   return v * 0.5
 
-fn fib(n: int):
+fn fib(n: int) -> int:
   if n < 2:
     return n
   return fib(n - 1) + fib(n - 2)

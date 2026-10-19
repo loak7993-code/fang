@@ -1,0 +1,15 @@
+norm = 5
+pi = 3.141592653589793
+max = 2.5
+floor = 3
+[Hello, Leo!]
+upper: HELLO, LEO!
+found 'Leo' at: 7
+starts: true
+parts = 2: Hello + Leo!
+joined: Hello-Leo!
+replaced: Hello, World!
+num + 1 = 124
+cwd = /root/leo
+pid-ish args = 1
+now > 1e9: true

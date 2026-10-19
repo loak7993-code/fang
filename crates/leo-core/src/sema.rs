@@ -160,6 +160,8 @@ pub struct Analysis {
     /// Collection instantiations the codegen must stamp.
     pub insts: BTreeSet<Ty>,
     pub errors: Vec<SemaError>,
+    /// Functions currently being inferred (self-recursion detection).
+    pub in_progress: HashSet<String>,
     /// Module name -> imported module names (resolved).
     pub imports: HashMap<String, Vec<String>>,
     pub modules: Vec<String>,
@@ -209,6 +211,7 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
         catch_ty: HashMap::new(),
         insts: BTreeSet::new(),
         errors: Vec::new(),
+        in_progress: HashSet::new(),
         imports: HashMap::new(),
         modules: Vec::new(),
     };
@@ -589,7 +592,9 @@ fn infer_fn(f: &FnDecl, module: &str, a: &mut Analysis) {
         ret: declared.clone(),
         loop_depth: 0,
     };
+    a.in_progress.insert(mangled.clone());
     let inferred = infer_block(&f.body, module, a, &mut ctx, declared, is_void_declared);
+    a.in_progress.remove(&mangled);
 
     if let Some(fi) = a.fns.get_mut(&mangled) {
         fi.ret = inferred;
@@ -1496,6 +1501,16 @@ fn infer_call(
         // function in this module
         let fm = format!("f_{}_{}", module, name);
         if let Some(fi) = a.fns.get(&fm).cloned() {
+            if a.in_progress.contains(&fm) && matches!(fi.ret, Ty::Err) {
+                a.err(
+                    format!(
+                        "fn '{}' calls itself, so it needs a declared return type, like: fn {}(...) -> int:",
+                        name, name
+                    ),
+                    call_expr.span,
+                    module,
+                );
+            }
             check_args(&fi, args, call_expr, module, a, ctx);
             a.call.insert((module.to_string(), call_expr.span.start), CallTarget::Fn(fm));
             return fi.ret;

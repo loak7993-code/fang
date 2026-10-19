@@ -37,3 +37,12 @@ and freestanding (-nostdlib, no runtime, value types only), asm passthrough.
   Cost: locals live until function exit; acceptable, documented.
   Ruling: raise leaks the raising frame's RC locals (longjmp skips cleanup).
   Documented limitation; the v0.2 design is a frame-unwinder walk.
+
+Task M5: complete (math, str, io, os, fs, time in Leo over externs; embedded
+in the binary; conformance harness with expected outputs).
+  Ruling: self-recursive functions must declare their return type
+  (fn fib(n: int) -> int). Undeclared recursion has no inferable type;
+  the compile error teaches the rule. Non-recursive functions infer fully.
+  Ruling: externs keep mangled registry keys but call and prototype by their
+  raw C symbol; prototypes are not emitted at all since the header declares
+  them.
