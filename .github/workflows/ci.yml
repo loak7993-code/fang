@@ -1,0 +1,24 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test --workspace
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Learn examples run
+        run: LEO=./target/release/leo bash tools/check_learn.sh
+      - name: Benchmarks compile and run
+        run: LEO=./target/release/leo bash bench/run.sh
