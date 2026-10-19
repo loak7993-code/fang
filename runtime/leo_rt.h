@@ -275,16 +275,26 @@ void leo_sort_str(leo_str** base, int64_t n);
     free(d->slots); d->slots = ns; d->cap = ncap;                              \
   }                                                                            \
   static void leo_dict_##KS##_##VS##_set(leo_dict_##KS##_##VS* d, K k, V v) { \
+    /* Tombstones count toward the load factor so a churned table grows */   \
+    /* instead of filling its probe space.                                   */ \
     if ((d->len + 1) * 10 >= d->cap * 7) leo_dict_##KS##_##VS##_grow(d);      \
     uint64_t h = (uint64_t)(KHASH(k));                                        \
     int64_t j = (int64_t)(h & (uint64_t)(d->cap - 1));                        \
+    int64_t reuse = -1;                                                        \
     while (d->slots[j].slot != -1) {                                           \
-      if (d->slots[j].hash == h && KEQ(d->slots[j].key, k)) {                 \
+      if (d->slots[j].slot == -2) {                                           \
+        if (reuse < 0) reuse = j;                                             \
+      } else if (d->slots[j].hash == h && KEQ(d->slots[j].key, k)) {           \
         DEC_V(d->slots[j].val);                                               \
         d->slots[j].val = v;                                                  \
         return;                                                               \
       }                                                                       \
       j = (j + 1) & (d->cap - 1);                                             \
+    }                                                                         \
+    if (reuse >= 0) {                                                         \
+      d->slots[reuse].hash = h; KINC(k); d->slots[reuse].key = k;             \
+      d->slots[reuse].val = v; d->slots[reuse].slot = d->len++;               \
+      return;                                                                 \
     }                                                                         \
     d->slots[j].hash = h; KINC(k); d->slots[j].key = k; d->slots[j].val = v;  \
     d->slots[j].slot = d->len++;                                              \
