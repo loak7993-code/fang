@@ -21,12 +21,12 @@ fn hello_world() {
 
 #[test]
 fn numbers_int_float_exponent() {
-    let k = kinds("let a = 42\nlet b = 3.14\nlet c = 1e10\nlet d = 2.5e-3\n");
+    let k = kinds("let a = 42\nlet b = 3.25\nlet c = 1e10\nlet d = 2.5e-3\n");
     assert_eq!(
         k[..4],
         [Let, Ident("a".into()), Eq, Int(42)]
     );
-    assert!(matches!(k[8], Float(f) if (f - 3.14).abs() < 1e-12));
+    assert!(matches!(k[8], Float(f) if (f - 3.25).abs() < 1e-12));
     assert!(matches!(k[13], Float(f) if f == 1e10));
     assert!(matches!(k[18], Float(f) if (f - 2.5e-3).abs() < 1e-12));
 }

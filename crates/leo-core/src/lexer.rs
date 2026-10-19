@@ -127,11 +127,10 @@ impl<'a> Lexer<'a> {
     /// Lex a full source file.
     pub fn tokenize(mut self) -> LexResult<Vec<Token>> {
         while !self.at_eof() {
-            if self.at_line_start && self.depth == 0 && !self.expr_mode {
-                if self.handle_line_start()? {
+            if self.at_line_start && self.depth == 0 && !self.expr_mode
+                && self.handle_line_start()? {
                     continue; // blank or comment-only line, skipped whole
                 }
-            }
             self.at_line_start = false;
             let c = self.peek();
             match c {
@@ -360,7 +359,7 @@ impl<'a> Lexer<'a> {
     fn lex_number(&mut self) -> LexResult<()> {
         let start_pos = self.pos;
         let (line, col, start, _) = self.here();
-        while matches!(self.peek(), b'0'..=b'9') {
+        while self.peek().is_ascii_digit() {
             self.advance();
         }
         let mut is_float = false;
@@ -368,7 +367,7 @@ impl<'a> Lexer<'a> {
         if self.peek() == b'.' && self.peek2().is_ascii_digit() {
             is_float = true;
             self.advance(); // '.'
-            while matches!(self.peek(), b'0'..=b'9') {
+            while self.peek().is_ascii_digit() {
                 self.advance();
             }
         }
@@ -378,13 +377,13 @@ impl<'a> Lexer<'a> {
             if matches!(self.src.get(lookahead), Some(b'+') | Some(b'-')) {
                 lookahead += 1;
             }
-            if self.src.get(lookahead).map_or(false, |b| b.is_ascii_digit()) {
+            if self.src.get(lookahead).is_some_and(|b| b.is_ascii_digit()) {
                 is_float = true;
                 self.advance(); // e
                 if matches!(self.peek(), b'+' | b'-') {
                     self.advance();
                 }
-                while matches!(self.peek(), b'0'..=b'9') {
+                while self.peek().is_ascii_digit() {
                     self.advance();
                 }
             }
