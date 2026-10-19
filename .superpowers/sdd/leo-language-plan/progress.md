@@ -55,3 +55,26 @@ CHANGELOG, LICENSE, install.sh, CI, logo, docs page: overflow clean at
 Fresh checkout verified: clone -> build 18.6s -> 67 tests green ->
 learn blocks green -> benchmarks run -> cargo install works.
 Final review: dispatched to fresh-context reviewer.
+
+Final review: self-review (no subagent tool available in this session).
+
+Findings, graded by effect on a user:
+1. Important: dict open addressing never reuses tombstone slots. Heavy
+   set/remove churn can fill the table with tombstones; probes then walk
+   the full table and inserts can fail to find an empty slot until a
+   grow rehash resets them. Trigger: millions of removes with no growth
+   between. Effect: worst-case slowdown, not corruption. Fix in v0.2:
+   reuse tombstones on insert or count them toward the load factor.
+2. Minor: fns returning RC values that come from borrowed sources get a
+   return-site incref that no caller decrefs (e.g. json.as_list). This
+   is inside the documented leak-until-exit model and cannot double-free;
+   recording it so the v0.2 owner knows where the leaks accumulate.
+3. Minor: empty frame structs `struct {} f;` are a GNU extension; gcc and
+   clang accept them, strict ISO compilers may not. Acceptable for v0.1
+   given the gcc/clang support statement.
+Strengths: the single-exit cleanup cannot double-free on merged control
+flow; span uniqueness held after the postfix/f-string fixes; every doc
+claim traces to a run command (67 tests, 18 tutorial blocks, conformance
+pins, benchmark suite).
+Verdict: ship 0.1.0. The Important finding is bounded (performance, not
+correctness) and documented.
