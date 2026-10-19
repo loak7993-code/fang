@@ -23,12 +23,14 @@ pub enum TokKind {
 
     Let, Fn, If, Elif, Else, For, In, While, Return, Break, Continue, Pass,
     Struct, Extern, True, False, Nil, And, Or, Not, Raise, Try, Except,
-    Import, Export,
+    Import, Export, From,
 
     Plus, Minus, Star, Slash, Percent, StarStar,
     Eq, EqEq, NotEq, Lt, Gt, Le, Ge,
     LParen, RParen, LBracket, RBracket, LBrace, RBrace,
     Comma, Colon, Dot, DotDot, DotDotEq, Arrow,
+    /// Comment text (without the leading '#').
+    Comment(String),
     Newline,
     Indent,
     Dedent,
@@ -91,6 +93,7 @@ fn keyword(s: &str) -> Option<TokKind> {
         "except" => TokKind::Except,
         "import" => TokKind::Import,
         "export" => TokKind::Export,
+        "from" => TokKind::From,
         _ => return None,
     })
 }
@@ -127,10 +130,12 @@ impl<'a> Lexer<'a> {
     /// Lex a full source file.
     pub fn tokenize(mut self) -> LexResult<Vec<Token>> {
         while !self.at_eof() {
-            if self.at_line_start && self.depth == 0 && !self.expr_mode
-                && self.handle_line_start()? {
-                    continue; // blank or comment-only line, skipped whole
+            if self.at_line_start && self.depth == 0 && !self.expr_mode {
+                match self.handle_line_start()? {
+                    LineStart::Skip => continue,
+                    LineStart::Comment | LineStart::Code => {}
                 }
+            }
             self.at_line_start = false;
             let c = self.peek();
             match c {
@@ -150,8 +155,20 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 b'#' => {
-                    while !self.at_eof() && self.peek() != b'\n' {
-                        self.advance();
+                    if self.expr_mode {
+                        while !self.at_eof() && self.peek() != b'\n' {
+                            self.advance();
+                        }
+                    } else {
+                        let (line, col, start, _) = self.here();
+                        let text_start = self.pos + 1;
+                        while !self.at_eof() && self.peek() != b'\n' {
+                            self.advance();
+                        }
+                        let raw = std::str::from_utf8(&self.src[text_start..self.pos]).unwrap_or("");
+                        let text = raw.trim().to_string();
+                        let end = self.pos as u32;
+                        self.push_with(TokKind::Comment(text), line, col, start, end);
                     }
                 }
                 b'"' => self.lex_string(false)?,
@@ -282,8 +299,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// Handle the start of a line: measure indentation, emit Indent/Dedent.
-    /// Returns true if the line was blank or comment-only (already consumed).
-    fn handle_line_start(&mut self) -> LexResult<bool> {
+    fn handle_line_start(&mut self) -> LexResult<LineStart> {
         let mut width = 0u32;
         loop {
             match self.peek() {
@@ -296,16 +312,22 @@ impl<'a> Lexer<'a> {
                 }
                 b'\n' => {
                     self.advance();
-                    return Ok(true);
+                    return Ok(LineStart::Skip);
                 }
                 b'\r' => {
                     self.advance();
                 }
                 b'#' => {
-                    while !self.at_eof() && self.peek() != b'\n' {
-                        self.advance();
+                    // Comment-only line: comments never dedent. A comment
+                    // deeper than the current level opens one, which the
+                    // next code line either joins or closes.
+                    let cur = *self.indents.last().unwrap();
+                    if width > cur {
+                        self.indents.push(width);
+                        let (line, col, start, _) = self.here();
+                        self.push(TokKind::Indent, line, col, start, start);
                     }
-                    return Ok(true);
+                    return Ok(LineStart::Comment);
                 }
                 _ => break,
             }
@@ -332,7 +354,7 @@ impl<'a> Lexer<'a> {
                 );
             }
         }
-        Ok(false)
+        Ok(LineStart::Code)
     }
 
     fn lex_ident_or_string(&mut self) -> LexResult<()> {
@@ -622,6 +644,15 @@ fn utf8_len(b: u8) -> usize {
     }
 }
 
+enum LineStart {
+    /// Blank line: consumed entirely, no tokens.
+    Skip,
+    /// Comment-only line: position left on '#'; main loop emits the Comment.
+    Comment,
+    /// Code line: indentation processed, position on the first code byte.
+    Code,
+}
+
 /// Lex the interior of an f-string expression: single expression, no
 /// newlines, no indentation tokens.
 pub fn lex_expression(src: &str) -> LexResult<Vec<Token>> {
@@ -631,7 +662,7 @@ pub fn lex_expression(src: &str) -> LexResult<Vec<Token>> {
     let toks = lx.tokenize()?;
     Ok(toks
         .into_iter()
-        .filter(|t| !matches!(t.kind, TokKind::Newline | TokKind::Eof))
+        .filter(|t| !matches!(t.kind, TokKind::Newline | TokKind::Comment(_)))
         .collect())
 }
 

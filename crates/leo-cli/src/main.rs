@@ -28,8 +28,7 @@ EXIT CODES:
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let cmd = args.first().map(String::as_str).unwrap_or("help");
-    match cmd {
+    match args.first().map(String::as_str).unwrap_or("help") {
         "version" | "--version" | "-V" => {
             println!("leo {}", VERSION);
             ExitCode::SUCCESS
@@ -38,10 +37,53 @@ fn main() -> ExitCode {
             print!("{}", USAGE);
             ExitCode::SUCCESS
         }
-        _ => {
+        "fmt" => cmd_fmt(&args[1..]),
+        cmd => {
             eprintln!("leo: unknown or unfinished command '{}'", cmd);
             eprint!("{}", USAGE);
             ExitCode::from(1)
         }
+    }
+}
+
+fn cmd_fmt(files: &[String]) -> ExitCode {
+    if files.is_empty() {
+        eprintln!("leo fmt: pass at least one .leo file");
+        return ExitCode::from(1);
+    }
+    let mut failed = false;
+    for path in files {
+        let src = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("leo fmt: cannot read {}: {}", path, e);
+                failed = true;
+                continue;
+            }
+        };
+        match leo_core::parse_source("fmt", &src) {
+            Ok(m) => {
+                let out = leo_core::format_module(&m);
+                if out != src {
+                    if let Err(e) = std::fs::write(path, &out) {
+                        eprintln!("leo fmt: cannot write {}: {}", path, e);
+                        failed = true;
+                        continue;
+                    }
+                    println!("formatted: {}", path);
+                } else {
+                    println!("unchanged: {}", path);
+                }
+            }
+            Err(e) => {
+                eprintln!("leo fmt: {}: {}", path, e);
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
     }
 }

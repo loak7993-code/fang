@@ -99,7 +99,7 @@ fn fstring_basic() {
         leo_core::TokKind::FStr(parts) => {
             assert_eq!(parts.len(), 3);
             assert_eq!(parts[0], leo_core::FStrPart::Literal("hi ".into()));
-            assert!(matches!(&parts[1], leo_core::FStrPart::Expr(text, toks) if text == "name" && toks.len() == 1));
+            assert!(matches!(&parts[1], leo_core::FStrPart::Expr(text, toks) if text == "name" && toks.len() == 2));
             assert_eq!(parts[2], leo_core::FStrPart::Literal("!".into()));
         }
         other => panic!("expected f-string, got {:?}", other),
@@ -130,11 +130,19 @@ fn fstring_nested_expr_with_call() {
 }
 
 #[test]
-fn comments_and_blank_lines_skipped() {
+fn comments_are_tokens_and_blank_lines_skipped() {
     let k = kinds("# leading comment\n\nlet a = 1  # trailing\n\n# another\nlet b = 2\n");
     assert_eq!(
-        k[..7],
-        [Let, Ident("a".into()), Eq, Int(1), Newline, Let, Ident("b".into())]
+        k[..8],
+        [
+            Comment("leading comment".into()), Newline,
+            Let, Ident("a".into()), Eq, Int(1), Comment("trailing".into()), Newline
+        ]
+    );
+    // Blank lines produce no tokens; the next comment runs to the final let.
+    assert_eq!(
+        k[8..],
+        [Comment("another".into()), Newline, Let, Ident("b".into()), Eq, Int(2), Newline, Eof]
     );
 }
 
