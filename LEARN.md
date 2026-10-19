@@ -1,0 +1,284 @@
+# Learn Leo in 15 minutes
+
+Leo reads like Python and runs as native code. This tutorial covers the
+whole language. Type the examples into a file called `intro.leo` and run
+them with `leo run intro.leo` as you go.
+
+Every example below runs exactly as printed.
+
+## 1. Values
+
+Leo has four primitive types: `int`, `float`, `bool`, and `str`.
+
+```leo
+fn main():
+  print(42)
+  print(3.5)
+  print(true)
+  print("hello")
+```
+
+Numbers, booleans, and strings print themselves. Division follows the
+operands: `7 / 2` is `3` (int), `7.0 / 2` is `3.5` (float). That is the
+biggest difference from Python and it is deliberate: no hidden type
+changes in a compiled language.
+
+```leo
+fn main():
+  print(7 / 2)
+  print(float(7) / 2)
+```
+
+## 2. Names
+
+Declare a name once with `let`. After that, assign to it with `=`.
+
+```leo
+fn main():
+  let x = 10
+  x = x + 5
+  print(x)
+```
+
+A name keeps its type. Assigning a different type is a compile error that
+tells you both types.
+
+```leo-expect-error
+fn main():
+  let x = 1
+  x = 1.5
+```
+
+That program does not compile. Leo says `x is int; assigning float is not
+allowed`. Convert the value or use a new name.
+
+## 3. Functions
+
+Define with `fn`. Parameters carry types; everything else is inferred.
+`main()` is the entry point.
+
+```leo
+fn add(a: int, b: int) -> int:
+  return a + b
+
+fn main():
+  print(add(2, 3))
+```
+
+The `-> int` on `add` is optional for plain functions. A function that
+calls itself needs it, so the compiler can check the recursion:
+
+```leo
+fn fib(n: int) -> int:
+  if n < 2:
+    return n
+  return fib(n - 1) + fib(n - 2)
+
+fn main():
+  print(fib(10))
+```
+
+## 4. Control flow
+
+Conditions must be booleans. There is no truthiness: an empty list is
+`len(xs) == 0`, not just `xs`.
+
+```leo
+fn main():
+  let n = 15
+  if n % 15 == 0:
+    print("fizzbuzz")
+  elif n % 3 == 0:
+    print("fizz")
+  elif n % 5 == 0:
+    print("buzz")
+  else:
+    print(n)
+```
+
+Loops: `while`, range `for`, and collection `for`.
+
+```leo
+fn main():
+  let i = 0
+  while i < 3:
+    i = i + 1
+  for j in 0..5:
+    print(j)
+  for k in 0..=3:
+    print(k)
+```
+
+`0..5` excludes the end, `0..=3` includes it. Use `break` and `continue`
+inside loops.
+
+## 5. Collections
+
+`list` and `dict` are built in. They are typed by what you put in them.
+
+```leo
+fn main():
+  let xs = [4, 1, 3]
+  xs.push(2)
+  xs.sort()
+  print(xs[0], xs[-1], len(xs))
+  print(len(xs[1:3]))
+```
+
+An empty list needs its type written out, because there is nothing to
+infer from:
+
+```leo
+fn main():
+  let ys: list[int] = []
+  ys.push(1)
+  print(len(ys))
+```
+
+Dicts map `str` or `int` keys to values:
+
+```leo
+fn main():
+  let ages = {"panda": 30, "leo": 1}
+  ages.set("nova", 5)
+  print(ages.get("panda", 0))
+  print(ages.contains("leo"))
+  for name, age in ages.items():
+    print(f"{name} is {age}")
+```
+
+Indexing a list with `xs[i]` gives one element. Negative indexes count
+from the end. Slices `xs[1:3]` give a new list.
+
+## 6. Strings and f-strings
+
+Strings are immutable. Build text with f-strings, which accept any
+printable expression inside braces:
+
+```leo
+fn main():
+  let name = "leo"
+  let version = 1
+  print(f"{name} v{version}, {1 + 2} tests")
+```
+
+String methods: `upper`, `lower`, `strip`, `split`, `join`, `replace`,
+`contains`, `find`, `starts_with`, `ends_with`, `to_int`, `to_float`.
+
+```leo
+fn main():
+  let parts = "a,b,c".split(",")
+  print(len(parts))
+  print("-".join(parts))
+  print("42".to_int() + 1)
+```
+
+## 7. Structs and methods
+
+A struct is a fixed set of named fields, passed by value.
+
+```leo
+struct Point:
+  x: float
+  y: float
+
+fn Point.length(self) -> float:
+  return (self.x * self.x + self.y * self.y) ** 0.5
+
+fn main():
+  let p = Point(3.0, 4.0)
+  print(p.length())
+  print(p.x)
+```
+
+Construct with the struct name like a function. Methods are functions
+whose first parameter is `self`; they have no runtime cost over a plain
+function call.
+
+## 8. Errors
+
+Runtime failures (bad index, bad division, failed assert) stop the
+program with a message and the file and line. For expected failures,
+`raise` a value and catch it with `try`/`except`:
+
+```leo
+fn main():
+  try:
+    raise "the disk is full"
+  except e:
+    print(f"caught: {e}")
+```
+
+## 9. Modules and packages
+
+Standard modules load with `import` and are used by qualified name:
+
+```leo
+import math
+import str
+
+fn main():
+  print(math.sqrt(2.0))
+  print("HI".lower())
+```
+
+Your own files import by name when they sit next to the entry file:
+`import utils` reads `utils.leo`. Install someone's package from a git
+repository:
+
+```
+leo add github.com/someone/mypkg
+```
+
+That clones into `leo_packages/` and pins the commit in `leo.lock`. Then
+`import mypkg` just works. Publishing a package means pushing a git
+repository with `mypkg.leo` at its root.
+
+## 10. Talking to C
+
+Declare any C function and call it. This is how Leo reaches the whole C
+ecosystem: GUI toolkits, databases, syscalls, kernel interfaces.
+
+```leo
+extern fn sqrt(x: float) -> float from "math.h"
+
+fn main():
+  print(sqrt(2.0))
+```
+
+Types map directly: `int` to `long long`, `float` to `double`,
+`bool` to `bool`, `ptr` to `void*`. Convert between pointers and
+integers with `cast`, and get a C string with `s.to_cstr()`.
+Variadic C functions are not supported in v0.1.
+
+## 11. Inline assembly and freestanding builds
+
+For kernels and bare-metal targets:
+
+```leo
+fn main():
+  asm("nop")
+```
+
+Build without the runtime, libc, or any dependency:
+
+```
+leo build kernel.leo --freestanding --target x86_64-elf
+```
+
+Freestanding programs use the value types (`int`, `float`, `bool`,
+`ptr`, structs, `asm`); heap collections need the runtime.
+
+## Differences from Python, in one list
+
+- `let` declares a name; assignments never retype it
+- parameters carry types; everything else is inferred
+- `int / int` truncates; write `float(a) / b` for real division
+- no truthiness: conditions are `bool`
+- no closures, no classes, no exceptions hierarchy; `try`/`except` with
+  plain values
+- tuples exist for multiple returns and dict pairs, nothing else
+- recursive functions declare their return type
+
+That is the whole language. The standard library reference is in
+`STDLIB.md`, and the full grammar is in `SPEC.md`.
