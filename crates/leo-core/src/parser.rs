@@ -158,7 +158,10 @@ impl<'a> Parser<'a> {
                     match self.peek_kind() {
                         Fn => items.push(Item::Fn(self.fn_decl(true)?)),
                         Struct => items.push(Item::Struct(self.struct_decl(true)?)),
-                        Let => items.push(self.const_decl(true, t)?),
+                        Let => {
+                            self.advance();
+                            items.push(self.const_decl(true, t)?)
+                        }
                         _ => {
                             return perr(
                                 "expected fn, struct, or let after 'export'".to_string(),

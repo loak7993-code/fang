@@ -27,3 +27,13 @@ Task M3: complete (sema: inference, method sugar, instantiation records; 66 test
   (3) cross-compile target passthrough to cc. The transpile-to-C
   architecture already enables all three. Cost if wrong: asm passthrough
   is raw by design; freestanding has no heap types (documented, like C).
+
+Task M4: complete. leo run/build end-to-end verified: structs+methods,
+recursion, list/dict/tuple stamps, f-strings, try/except (setjmp), release
+and freestanding (-nostdlib, no runtime, value types only), asm passthrough.
+  Ruling: function-level cleanup via a single __exit label + flat locals
+  registry + zero-init frame, instead of per-block cleanup. Per-block
+  cleanup double-frees on merged control flow after conditional returns.
+  Cost: locals live until function exit; acceptable, documented.
+  Ruling: raise leaks the raising frame's RC locals (longjmp skips cleanup).
+  Documented limitation; the v0.2 design is a frame-unwinder walk.

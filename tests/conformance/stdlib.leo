@@ -1,0 +1,36 @@
+import math
+import str
+import io
+import os
+import time
+
+struct Vec2:
+  x: float
+  y: float
+
+fn Vec2.norm(self) -> float:
+  return math.sqrt(self.x * self.x + self.y * self.y)
+
+fn main():
+  let v = Vec2(3.0, 4.0)
+  print(f"norm = {v.norm()}")
+  print(f"pi = {math.PI}")
+  print(f"max = {math.max(1.5, 2.5)}")
+  print(f"floor = {math.floor(3.7)}")
+  let s = "  Hello, Leo!  "
+  let t = s.strip()
+  print(f"[{t}]")
+  print(f"upper: {t.upper()}")
+  print(f"found 'Leo' at: {t.find("Leo")}")
+  print(f"starts: {t.starts_with("Hello")}")
+  let parts = t.split(", ")
+  print(f"parts = {len(parts)}: {parts[0]} + {parts[1]}")
+  let joined = "-".join(parts)
+  print(f"joined: {joined}")
+  print(f"replaced: {t.replace("Leo", "World")}")
+  let n = "123".to_int()
+  print(f"num + 1 = {n + 1}")
+  print(f"cwd = {os.getcwd()}")
+  print(f"pid-ish args = {len(os.args())}")
+  let now = time.now()
+  print(f"now > 1e9: {now > 1000000000.0}")

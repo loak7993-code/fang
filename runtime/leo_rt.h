@@ -50,8 +50,8 @@ bool leo_str_ends_with(leo_str* s, leo_str* suffix);
 leo_str* leo_str_from_i64(int64_t v);
 leo_str* leo_str_from_f64(double v);
 leo_str* leo_str_from_bool(bool v);
-bool leo_str_to_i64(leo_str* s, int64_t* out);
-bool leo_str_to_f64(leo_str* s, double* out);
+int64_t leo_str_to_i64(leo_str* s);
+double leo_str_to_f64(leo_str* s);
 uint64_t leo_str_hash(leo_str* s);
 leo_str* leo_str_char_at(leo_str* s, int64_t i);
 

@@ -160,22 +160,22 @@ leo_str* leo_str_from_bool(bool v) {
     return leo_str_new(v ? "true" : "false", v ? 4 : 5);
 }
 
-bool leo_str_to_i64(leo_str* s, int64_t* out) {
-    if (s->len == 0) return false;
+int64_t leo_str_to_i64(leo_str* s) {
+    if (s->len == 0) leo_panic("to_int: the string is empty", __FILE__, __LINE__);
     char* end = NULL;
     long long v = strtoll(s->bytes, &end, 10);
-    if (end != s->bytes + s->len) return false;
-    *out = (int64_t)v;
-    return true;
+    if (end != s->bytes + s->len)
+        leo_panic("to_int: not a whole number", __FILE__, __LINE__);
+    return (int64_t)v;
 }
 
-bool leo_str_to_f64(leo_str* s, double* out) {
-    if (s->len == 0) return false;
+double leo_str_to_f64(leo_str* s) {
+    if (s->len == 0) leo_panic("to_float: the string is empty", __FILE__, __LINE__);
     char* end = NULL;
     double v = strtod(s->bytes, &end);
-    if (end != s->bytes + s->len) return false;
-    *out = v;
-    return true;
+    if (end != s->bytes + s->len)
+        leo_panic("to_float: not a number", __FILE__, __LINE__);
+    return v;
 }
 
 uint64_t leo_str_hash(leo_str* s) {

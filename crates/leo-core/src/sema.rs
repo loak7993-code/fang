@@ -74,6 +74,8 @@ pub struct ParamInfo {
 #[derive(Debug, Clone)]
 pub struct FnInfo {
     pub mangled: String,
+    /// Raw C symbol for externs; equals mangled for Leo functions.
+    pub c_name: String,
     pub module: String,
     pub name: String,
     pub params: Vec<ParamInfo>,
@@ -256,6 +258,7 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
                         mangled.clone(),
                         FnInfo {
                             mangled,
+                            c_name: String::new(),
                             module: mname.clone(),
                             name: f.name.clone(),
                             params: Vec::new(),
@@ -277,6 +280,7 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
                         mangled.clone(),
                         FnInfo {
                             mangled,
+                            c_name: name.clone(),
                             module: mname.clone(),
                             name: name.clone(),
                             params: Vec::new(),
@@ -813,20 +817,22 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
                     module,
                 );
             }
-            let mut ret = infer_block(then, module, a, ctx, ctx.ret.clone(), true);
+            infer_block(then, module, a, ctx, ctx.ret.clone(), true);
             for (c, b) in elifs {
                 let ct = infer_expr(c, module, a, ctx);
                 if ct != Ty::Bool {
                     a.err(format!("elif condition must be bool, got {}", ct.show(a)), st.span, module);
                 }
-                let r = infer_block(b, module, a, ctx, ctx.ret.clone(), true);
-                ret = unify_ret(ret, r);
+                infer_block(b, module, a, ctx, ctx.ret.clone(), true);
             }
             if let Some(b) = els {
-                let r = infer_block(b, module, a, ctx, ctx.ret.clone(), true);
-                ret = unify_ret(ret, r);
+                infer_block(b, module, a, ctx, ctx.ret.clone(), true);
             }
-            Some(ret)
+            // The if contributes a return only when every branch returns.
+            match els {
+                Some(_) => block_returns(then, module, a, ctx).map(|t| t),
+                None => None,
+            }
         }
         StmtKind::While { cond, body } => {
             let ct = infer_expr(cond, module, a, ctx);
@@ -838,9 +844,10 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
                 );
             }
             ctx.loop_depth += 1;
-            let r = infer_block(body, module, a, ctx, ctx.ret.clone(), true);
+            infer_block(body, module, a, ctx, ctx.ret.clone(), true);
             ctx.loop_depth -= 1;
-            Some(r)
+            // A while loop can fall through; it never guarantees a return.
+            None
         }
         StmtKind::For { binders, iter, body } => {
             let binder_tys: Vec<Ty> = match iter {
@@ -918,6 +925,7 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
             infer_block(body, module, a, ctx, ctx.ret.clone(), true);
             ctx.loop_depth -= 1;
             ctx.scopes.pop();
+            // Loops fall through; they never guarantee a return.
             None
         }
         StmtKind::Try { body, binder, handler } => {
@@ -951,11 +959,25 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
     }
 }
 
-fn unify_ret(a: Ty, b: Ty) -> Ty {
-    if a == Ty::Void {
-        b
-    } else {
-        a
+/// Whether a block definitely returns (last statement is a return, or an
+/// if/elif/else chain where every branch does). Loops do not count.
+fn block_returns(stmts: &[Stmt], module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Option<Ty> {
+    let last = stmts.last()?;
+    match &last.kind {
+        StmtKind::Return(v) => Some(match v {
+            Some(e) => infer_expr(e, module, a, ctx),
+            None => Ty::Void,
+        }),
+        StmtKind::If { then, elifs, els, .. } => {
+            let els = els.as_ref()?;
+            let mut acc = block_returns(then, module, a, ctx)?;
+            for (_, b) in elifs {
+                acc = block_returns(b, module, a, ctx)?;
+            }
+            block_returns(els, module, a, ctx)?;
+            Some(acc)
+        }
+        _ => None,
     }
 }
 
@@ -1464,6 +1486,13 @@ fn infer_call(
         if a.structs.contains_key(&sm) {
             return struct_new(&sm, args, call_expr, module, a, ctx);
         }
+        // extern declared in this module (so std wrappers can call the C symbol)
+        let xm = format!("x_{}_{}", module, name);
+        if let Some(fi) = a.fns.get(&xm).cloned() {
+            check_args(&fi, args, call_expr, module, a, ctx);
+            a.call.insert((module.to_string(), call_expr.span.start), CallTarget::Fn(xm));
+            return fi.ret;
+        }
         // function in this module
         let fm = format!("f_{}_{}", module, name);
         if let Some(fi) = a.fns.get(&fm).cloned() {
@@ -1648,6 +1677,30 @@ fn infer_method(
     a: &mut Analysis,
     ctx: &mut Ctx,
 ) -> Ty {
+    // A qualified module call parses as a method: math.sqrt(x).
+    if let ExprKind::Ident(bn) = &recv.kind {
+        if ctx.lookup(bn).is_none() && a.imports.get(module).is_some_and(|v| v.iter().any(|m| m == bn)) {
+            let fm = format!("f_{}_{}", bn, name);
+            if let Some(fi) = a.fns.get(&fm).cloned() {
+                if !fi.exported {
+                    a.err(format!("'{}' in {} is not exported", name, bn), call_expr.span, module);
+                }
+                check_args(&fi, args, call_expr, module, a, ctx);
+                a.call.insert((module.to_string(), call_expr.span.start), CallTarget::Fn(fm));
+                return fi.ret;
+            }
+            let sm = format!("s_{}_{}", bn, name);
+            if a.structs.contains_key(&sm) {
+                return struct_new(&sm, args, call_expr, module, a, ctx);
+            }
+            a.err(format!("module '{}' has no '{}'", bn, name), recv.span, module);
+            for arg in args {
+                infer_expr(arg, module, a, ctx);
+            }
+            return Ty::Err;
+        }
+    }
+
     let rt = infer_expr(recv, module, a, ctx);
 
     // Special bridging methods.

@@ -140,7 +140,7 @@ impl<'a> Gen<'a> {
 
         // String pool.
         if !self.opts.freestanding && !self.pool.is_empty() {
-            for (i, text) in self.pool_order.iter().enumerate() {
+            for (i, _unused_text) in self.pool_order.iter().enumerate() {
                 writeln!(self.out, "static leo_str* L{};", i).unwrap();
             }
             writeln!(
@@ -173,18 +173,6 @@ impl<'a> Gen<'a> {
             let params = self.fn_params(fi);
             let ret = self.ctype_ret(&fi.ret);
             writeln!(self.out, "static {} {}({});", ret, fi.mangled, params).unwrap();
-        }
-        for fi in &fn_order {
-            if fi.is_extern {
-                writeln!(
-                    self.out,
-                    "extern {} {}({});",
-                    self.ctype_ret(&fi.ret),
-                    fi.mangled,
-                    self.fn_params(fi)
-                )
-                .unwrap();
-            }
         }
         writeln!(self.out).unwrap();
 
@@ -778,6 +766,16 @@ impl<'a> FnGen<'a> {
                 match target {
                     LValue::Ident(n) => {
                         let v = self.lookup(n).unwrap().clone();
+                        // The old value is released before the new one is
+                        // stored; materialize the RHS first so expressions
+                        // reading the old value stay valid.
+                        let code = if g.is_rc(&v.ty) || matches!(v.ty, Ty::Struct(_)) {
+                            let t = format!("__asg{}", self.temp());
+                            self.w(&format!("{} {} = {};", g.ctype(&v.ty), t, code));
+                            t
+                        } else {
+                            code
+                        };
                         match &v.ty {
                             Ty::Struct(m) => {
                                 for sd in g.struct_field_decref(&format!("f.{}", v.field), m) {
@@ -1647,6 +1645,7 @@ impl<'a> FnGen<'a> {
         match target {
             Some(CallTarget::Fn(mangled)) | Some(CallTarget::FnSelf(mangled)) => {
                 let fi = g.a.fns[&mangled].clone();
+                let call_name = if fi.is_extern { fi.c_name.clone() } else { mangled.clone() };
                 let mut arg_codes = Vec::new();
                 for (i, arg) in args.iter().enumerate() {
                     let pi = if skip_first { i + 1 } else { i };
@@ -1660,7 +1659,7 @@ impl<'a> FnGen<'a> {
                 }
                 let fresh = g.is_rc(&ret_ty);
                 (
-                    format!("{}({})", mangled, arg_codes.join(", ")),
+                    format!("{}({})", call_name, arg_codes.join(", ")),
                     ret_ty,
                     fresh,
                 )
@@ -1914,6 +1913,33 @@ impl<'a> FnGen<'a> {
             .call
             .get(&(self.module.clone(), call_expr.span.start))
             .cloned();
+        // Qualified module call: math.sqrt(x) parses as a method; the
+        // receiver is the module name and is not passed.
+        if let Some(CallTarget::Fn(mangled)) = &target {
+            let fi = g.a.fns[mangled].clone();
+            let mut arg_codes = Vec::new();
+            for (i, arg) in args.iter().enumerate() {
+                let pt = fi.params.get(i).map(|p| p.ty.clone()).unwrap_or(Ty::Err);
+                let (code, _, fr) = self.gen_expr(arg, g);
+                if g.is_rc(&pt) && !fr {
+                    self.w(&format!("leo_incref((void*)({}));", code));
+                }
+                arg_codes.push(code);
+            }
+            let c_name = if fi.is_extern { fi.c_name.clone() } else { mangled.clone() };
+            let ret_ty = self
+                .a
+                .ty
+                .get(&(self.module.clone(), call_expr.span.start))
+                .cloned()
+                .unwrap_or(Ty::Err);
+            let fresh = g.is_rc(&ret_ty);
+            return (
+                format!("{}({})", c_name, arg_codes.join(", ")),
+                ret_ty,
+                fresh,
+            );
+        }
         if let Some(CallTarget::FnSelf(mangled)) = target {
             let fi = g.a.fns[&mangled].clone();
             let (recv_code, _, fresh) = self.gen_expr(recv, g);
@@ -2094,14 +2120,14 @@ fn collect_stmt_strs(st: &Stmt, order: &mut Vec<String>) {
 fn collect_expr_strs(e: &Expr, order: &mut Vec<String>) {
     match &e.kind {
         ExprKind::Str(s) => {
-            if !s.is_empty() && !order.contains(s) {
+            if !order.contains(s) {
                 order.push(s.clone());
             }
         }
         ExprKind::FStr(parts) => {
             for p in parts {
                 if let FStrPartAst::Lit(l) = p {
-                    if !l.is_empty() && !order.contains(l) {
+                    if !order.contains(l) {
                         order.push(l.clone());
                     }
                 }
@@ -2124,7 +2150,14 @@ fn collect_expr_strs(e: &Expr, order: &mut Vec<String>) {
             collect_expr_strs(l, order);
             collect_expr_strs(r, order);
         }
-        ExprKind::Call(_, args) | ExprKind::Method(_, _, args) => {
+        ExprKind::Call(callee, args) => {
+            collect_expr_strs(callee, order);
+            for a in args {
+                collect_expr_strs(a, order);
+            }
+        }
+        ExprKind::Method(recv, _, args) => {
+            collect_expr_strs(recv, order);
             for a in args {
                 collect_expr_strs(a, order);
             }

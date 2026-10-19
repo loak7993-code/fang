@@ -37,8 +37,15 @@ EXIT CODES:
 const RT_H: &str = include_str!("../../../runtime/leo_rt.h");
 const RT_C: &str = include_str!("../../../runtime/leo_rt.c");
 
-/// Standard library modules, embedded. Populated as std/*.leo are written.
-static STD_MODULES: &[(&str, &str)] = &[];
+/// Standard library modules, embedded at build time.
+static STD_MODULES: &[(&str, &str)] = &[
+    ("io", include_str!("../../../std/io.leo")),
+    ("str", include_str!("../../../std/str.leo")),
+    ("math", include_str!("../../../std/math.leo")),
+    ("os", include_str!("../../../std/os.leo")),
+    ("fs", include_str!("../../../std/fs.leo")),
+    ("time", include_str!("../../../std/time.leo")),
+];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
