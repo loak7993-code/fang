@@ -120,8 +120,12 @@ fn write_block(out: &mut String, stmts: &[Stmt], depth: usize) {
 fn write_stmt(out: &mut String, st: &Stmt, pad: &str) {
     match &st.kind {
         StmtKind::Comment(text) => out.push_str(&format!("{}# {}\n", pad, text)),
-        StmtKind::Let { binders, value } => {
-            out.push_str(&format!("{}let {} = ", pad, binders.join(", ")));
+        StmtKind::Let { binders, ann, value } => {
+            out.push_str(&format!("{}let {}", pad, binders.join(", ")));
+            if let Some(a) = ann {
+                out.push_str(&format!(": {}", a));
+            }
+            out.push_str(" = ");
             write_expr(out, value, 0);
             out.push('\n');
         }

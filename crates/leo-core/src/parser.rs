@@ -353,14 +353,35 @@ impl<'a> Parser<'a> {
             Let => {
                 self.advance();
                 let mut binders = vec![self.ident_tok("a name after 'let'")?.0];
-                if self.eat(&Comma) {
-                    binders.push(self.ident_tok("a second name after ','")?.0);
-                }
+                let tuple_ann = if self.eat(&Comma) {
+                    // Two binders: the annotation is a tuple type.
+                    let second_name = self.ident_tok("a second name after ','")?.0;
+                    binders.push(second_name);
+                    if self.eat(&Colon) {
+                        if let Type::Tuple(a, b) = self.parse_type()? {
+                            Some(Type::Tuple(a, b))
+                        } else {
+                            return perr(
+                                "two binders need a tuple annotation like (int, int)"
+                                    .to_string(),
+                                self.peek(),
+                            );
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    if self.eat(&Colon) {
+                        Some(self.parse_type()?)
+                    } else {
+                        None
+                    }
+                };
                 self.expect(&Eq, "'=' and a value")?;
                 let value = self.expr()?;
                 self.finish_line()?;
                 return Ok(Stmt {
-                    kind: StmtKind::Let { binders, value },
+                    kind: StmtKind::Let { binders, ann: tuple_ann, value },
                     span: tok_span(&t),
                 });
             }
@@ -748,7 +769,8 @@ impl<'a> Parser<'a> {
                         FStrPart::Literal(l) => ast_parts.push(FStrPartAst::Lit(l)),
                         FStrPart::Expr(text, toks) => {
                             let mut sub = Parser::new(&toks);
-                            let e = sub.expr()?;
+                            let mut e = sub.expr()?;
+                            shift_spans(&mut e, t.start + 1);
                             // The whole interior must be one expression.
                             if !matches!(sub.peek_kind(), Eof | Newline) {
                                 return perr(
@@ -893,6 +915,73 @@ impl<'a> Parser<'a> {
                 Ok(Type::Named(name))
             }
         }
+    }
+}
+
+/// Move an f-string sub-expression's spans into the f-string token's byte
+/// range so every expression in a module has a unique span start.
+fn shift_spans(e: &mut Expr, off: u32) {
+    e.span.start += off;
+    e.span.end += off;
+    match &mut e.kind {
+        ExprKind::Unary(_, i) | ExprKind::Not(i) | ExprKind::Cast(_, i) => shift_spans(i, off),
+        ExprKind::Binary(_, l, r) => {
+            shift_spans(l, off);
+            shift_spans(r, off);
+        }
+        ExprKind::And(l, r) | ExprKind::Or(l, r) | ExprKind::Compare(_, l, r) => {
+            shift_spans(l, off);
+            shift_spans(r, off);
+        }
+        ExprKind::Call(i, args) => {
+            shift_spans(i, off);
+            for arg in args {
+                shift_spans(arg, off);
+            }
+        }
+        ExprKind::Method(i, _, args) => {
+            shift_spans(i, off);
+            for arg in args {
+                shift_spans(arg, off);
+            }
+        }
+        ExprKind::Field(i, _) => shift_spans(i, off),
+        ExprKind::Index(recv, idx) => {
+            shift_spans(recv, off);
+            shift_spans(idx, off);
+        }
+        ExprKind::Slice(recv, start, end) => {
+            shift_spans(recv, off);
+            if let Some(s) = start {
+                shift_spans(s, off);
+            }
+            if let Some(x) = end {
+                shift_spans(x, off);
+            }
+        }
+        ExprKind::ListLit(args) => {
+            for arg in args {
+                shift_spans(arg, off);
+            }
+        }
+        ExprKind::DictLit(pairs) => {
+            for (k, v) in pairs {
+                shift_spans(k, off);
+                shift_spans(v, off);
+            }
+        }
+        ExprKind::TupleLit(a, b) => {
+            shift_spans(a, off);
+            shift_spans(b, off);
+        }
+        ExprKind::FStr(parts) => {
+            for part in parts {
+                if let FStrPartAst::E(sub) = part {
+                    shift_spans(sub, off);
+                }
+            }
+        }
+        _ => {}
     }
 }
 

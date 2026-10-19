@@ -44,7 +44,7 @@ impl std::fmt::Display for Type {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
     Sub,
@@ -54,7 +54,7 @@ pub enum BinOp {
     Pow,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmpOp {
     Eq,
     Ne,
@@ -133,7 +133,11 @@ pub type Block = Vec<Stmt>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StmtKind {
-    Let { binders: Vec<String>, value: Expr },
+    Let {
+        binders: Vec<String>,
+        ann: Option<Type>,
+        value: Expr,
+    },
     Assign { target: LValue, value: Expr },
     Return(Option<Expr>),
     If {
