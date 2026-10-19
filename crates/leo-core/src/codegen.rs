@@ -57,22 +57,19 @@ impl<'a> Gen<'a> {
         // Collect extern headers (sanitized) and pooled strings.
         for u in self.sources {
             for item in &u.module.items {
-                match item {
-                    Item::ExternFn { header, .. } => {
-                        let h = header.trim();
-                        if h.is_empty()
-                            || !h
-                                .chars()
-                                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-'))
-                        {
-                            return Err(format!(
-                                "extern header '{}' is not a plain header name (letters, digits, _ . / - only)",
-                                header
-                            ));
-                        }
-                        self.used_headers.insert(h.to_string());
+                if let Item::ExternFn { header, .. } = item {
+                    let h = header.trim();
+                    if h.is_empty()
+                        || !h
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-'))
+                    {
+                        return Err(format!(
+                            "extern header '{}' is not a plain header name (letters, digits, _ . / - only)",
+                            header
+                        ));
                     }
-                    _ => {}
+                    self.used_headers.insert(h.to_string());
                 }
             }
             collect_strs(&u.module, &mut self.pool, &mut self.pool_order);
@@ -179,16 +176,13 @@ impl<'a> Gen<'a> {
         // Bodies.
         for u in self.sources {
             for item in &u.module.items {
-                match item {
-                    Item::Fn(f) => {
-                        let mangled = match &f.receiver {
-                            Some(r) => format!("f_{}_{}_{}", u.name, r, f.name),
-                            None => format!("f_{}_{}", u.name, f.name),
-                        };
-                        let fi = self.a.fns[&mangled].clone();
-                        self.emit_fn(u, f, &fi);
-                    }
-                    _ => {}
+                if let Item::Fn(f) = item {
+                    let mangled = match &f.receiver {
+                        Some(r) => format!("f_{}_{}_{}", u.name, r, f.name),
+                        None => format!("f_{}_{}", u.name, f.name),
+                    };
+                    let fi = self.a.fns[&mangled].clone();
+                    self.emit_fn(u, f, &fi);
                 }
             }
         }
@@ -353,11 +347,12 @@ impl<'a> Gen<'a> {
             .enumerate()
             .map(|(i, (n, _))| format!("s.{} = a{};", n, i))
             .collect();
+        let ctor_name = format!("{}_new", sname);
         writeln!(
             self.out,
             "static inline {} {}({}) {{\n    {} s;\n    {}\n    return s;\n}}",
             sname,
-            format!("{}_new", sname),
+            ctor_name,
             params.join(", "),
             sname,
             assigns.join("\n    ")
@@ -504,12 +499,11 @@ impl<'a> Gen<'a> {
                         work.push((**v).clone());
                     }
                 }
-                Ty::Tuple(a, b) => {
-                    if out.insert(t.clone()) {
+                Ty::Tuple(a, b)
+                    if out.insert(t.clone()) => {
                         work.push((**a).clone());
                         work.push((**b).clone());
                     }
-                }
                 _ => {}
             }
         }
@@ -1011,9 +1005,7 @@ impl<'a> FnGen<'a> {
         let (code, t, fresh) = self.gen_expr(e, g);
         let tmp = format!("__tup{}", self.temp());
         self.w(&format!("{} {} = {};", g.ctype(&t), tmp, code));
-        if !fresh && g.is_rc(&t) {
-            self.has_temps.push((tmp.clone(), t.clone()));
-        } else if fresh && g.is_rc(&t) {
+        if g.is_rc(&t) {
             self.has_temps.push((tmp.clone(), t.clone()));
         }
         (tmp.clone(), tmp)
@@ -1375,7 +1367,7 @@ impl<'a> FnGen<'a> {
                             g.sfx(v),
                             rc,
                             ic,
-                            default_value(&**v)
+                            default_value(v)
                         ),
                         (**v).clone(),
                         false,
