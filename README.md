@@ -46,17 +46,20 @@ fn main():
 Same algorithms, median of 5 runs, on an AMD EPYC-Milan 8-core
 (Run `bench/run.sh` yourself: the suite ships in the repository).
 
-| benchmark | Leo | Python 3 | C (gcc -O2) | Leo vs Python |
-|-----------|------:|---------:|------------:|--------------:|
-| fib(32) recursive | 0.009 s | 0.635 s | 0.010 s | 71x |
-| loop sum, 100M | 0.001 s | 8.993 s | 0.001 s | 9000x |
-| string build, 100k | 0.216 s | 0.258 s | n/a | 1.2x |
-| dict ops, 1M | 0.037 s | 0.399 s | n/a | 11x |
-| sort 1M ints | 0.184 s | 1.091 s | n/a | 6x |
+| benchmark | Leo | Python 3 | C (gcc -O2) | Rust (rustc -O) |
+|-----------|------:|---------:|------------:|----------------:|
+| fib(32) recursive | 0.010 s | 0.617 s | 0.009 s | 0.013 s |
+| loop sum, 100M | 0.001 s | 8.847 s | 0.002 s | 0.002 s |
+| string build, 100k | 0.218 s | 0.255 s | n/a | 0.002 s |
+| dict ops, 1M | 0.049 s | 0.356 s | n/a | 0.074 s |
+| sort 1M ints | 0.178 s | 0.971 s | n/a | 0.064 s |
 
-Arithmetic lands at C parity. Collection-heavy code is 6x to 11x Python.
-String building with `+` is quadratic in both languages by design of the
-test; the builder under f-strings is linear.
+Arithmetic lands at C parity, alongside Rust. Integer-keyed dict ops
+beat Rust's default-hasher HashMap. Two honest losses: `sort` (C qsort
+through a function pointer versus Rust's inlined pdqsort, about 3x) and
+string `+` (Leo always allocates a fresh string, so quadratic in the
+number of concatenations; Rust reuses capacity. The builder behind
+f-strings is linear; a `+` fast path is on the v0.2 list).
 
 ## Install
 

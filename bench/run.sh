@@ -30,6 +30,13 @@ run_python() {
   timeit "python3 bench/$name.py"
 }
 
+run_rust() {
+  local name="$1"
+  [ -f "bench/$name.rs" ] || { echo "n/a"; return; }
+  rustc -O "bench/$name.rs" -o "/tmp/leo-bench-$name.rs.bin" 2>/dev/null || { echo "n/a"; return; }
+  timeit "/tmp/leo-bench-$name.rs.bin"
+}
+
 run_c() {
   local name="$1"
   [ -f "bench/$name.c" ] || { echo "n/a"; return; }
@@ -37,7 +44,7 @@ run_c() {
   timeit "/tmp/leo-bench-$name.c.bin"
 }
 
-printf "%-12s %10s %10s %10s\n" "bench" "leo(s)" "python(s)" "c(s)"
+printf "%-12s %10s %10s %10s %10s\n" "bench" "leo(s)" "python(s)" "c(s)" "rust(s)"
 for name in fib loopsum strbuild dictops sort; do
-  printf "%-12s %10s %10s %10s\n" "$name" "$(run_leo $name)" "$(run_python $name)" "$(run_c $name)"
+  printf "%-12s %10s %10s %10s %10s\n" "$name" "$(run_leo $name)" "$(run_python $name)" "$(run_c $name)" "$(run_rust $name)"
 done
