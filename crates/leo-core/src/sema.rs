@@ -601,6 +601,91 @@ fn infer_fn(f: &FnDecl, module: &str, a: &mut Analysis) {
     }
 }
 
+/// Return-flow summary for a block.
+#[derive(Clone)]
+struct RetInfo {
+    /// Type of some return seen anywhere in the block (for conflicts).
+    seen: Option<Ty>,
+    /// True when every path through the block returns.
+    guaranteed: bool,
+}
+
+impl RetInfo {
+    fn falls() -> Self {
+        RetInfo { seen: None, guaranteed: false }
+    }
+    fn merge_seen(&mut self, t: Ty, span: Span, module: &str, a: &mut Analysis) {
+        match &self.seen {
+            None => self.seen = Some(t),
+            Some(prev) => {
+                if *prev != t && *prev != Ty::Err && t != Ty::Err {
+                    a.errors.push(SemaError {
+                        msg: format!(
+                            "return type mismatch: earlier returns give {}, this returns {}",
+                            prev.show(a),
+                            t.show(a)
+                        ),
+                        line: span.line,
+                        col: span.col,
+                        module: module.to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn block_ret_info(
+    stmts: &[Stmt],
+    module: &str,
+    a: &mut Analysis,
+    ctx: &mut Ctx,
+) -> RetInfo {
+    ctx.scopes.push(HashMap::new());
+    let mut info = RetInfo::falls();
+    for st in stmts {
+        if info.guaranteed {
+            break; // unreachable code; types already decided
+        }
+        let r = infer_stmt(st, module, a, ctx);
+        if let Some(t) = r {
+            info.merge_seen(t, st.span, module, a);
+        }
+        if stmt_guarantees_return(st, module, a, ctx) {
+            info.guaranteed = true;
+        }
+    }
+    ctx.scopes.pop();
+    info
+}
+
+fn stmt_guarantees_return(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> bool {
+    match &st.kind {
+        StmtKind::Return(_) => true,
+        StmtKind::If { then, elifs, els, .. } => {
+            let Some(els) = els else { return false };
+            if !block_guarantees(then, module, a, ctx) {
+                return false;
+            }
+            for (_, b) in elifs {
+                if !block_guarantees(b, module, a, ctx) {
+                    return false;
+                }
+            }
+            block_guarantees(els, module, a, ctx)
+        }
+        _ => false,
+    }
+}
+
+fn block_guarantees(stmts: &[Stmt], module: &str, a: &mut Analysis, ctx: &mut Ctx) -> bool {
+    let last = match stmts.last() {
+        Some(l) => l,
+        None => return false,
+    };
+    stmt_guarantees_return(last, module, a, ctx)
+}
+
 fn infer_block(
     stmts: &[Stmt],
     module: &str,
@@ -609,34 +694,17 @@ fn infer_block(
     declared: Ty,
     declared_is_none: bool,
 ) -> Ty {
-    ctx.scopes.push(HashMap::new());
-    let mut ret: Option<Ty> = None;
-    for st in stmts {
-        let r = infer_stmt(st, module, a, ctx);
-        if let Some(t) = r {
-            ret = Some(match ret {
-                None => t,
-                Some(prev) => {
-                    if prev != t && prev != Ty::Err && t != Ty::Err {
-                        let (l, c) = (st.span.line, st.span.col);
-                        a.errors.push(SemaError {
-                            msg: format!(
-                                "return type mismatch: earlier returns give {}, this returns {}",
-                                prev.show(a),
-                                t.show(a)
-                            ),
-                            line: l,
-                            col: c,
-                            module: module.to_string(),
-                        });
-                    }
-                    prev
-                }
-            });
-        }
+    let info = block_ret_info(stmts, module, a, ctx);
+    if info.seen.is_some() && !info.guaranteed {
+        a.errors.push(SemaError {
+            msg: "not every path returns a value; add a return at the end or an else branch"
+                .to_string(),
+            line: 0,
+            col: 0,
+            module: module.to_string(),
+        });
     }
-    ctx.scopes.pop();
-    let inferred = ret.unwrap_or(Ty::Void);
+    let inferred = info.seen.unwrap_or(Ty::Void);
     if !declared_is_none && declared != Ty::Err && inferred != declared {
         a.errors.push(SemaError {
             msg: format!(
@@ -833,11 +901,38 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
             if let Some(b) = els {
                 infer_block(b, module, a, ctx, ctx.ret.clone(), true);
             }
-            // The if contributes a return only when every branch returns.
-            match els {
-                Some(_) => block_returns(then, module, a, ctx).map(|t| t),
-                None => None,
+            // Branch returns participate in conflict detection.
+            let mut seen: Option<Ty> = None;
+            let mut collect = |b: &Block, seen: &mut Option<Ty>| {
+                let sub = block_ret_info(b, module, a, ctx);
+                if let Some(t) = sub.seen {
+                    match seen {
+                        None => *seen = Some(t),
+                        Some(prev) => {
+                            if *prev != t && *prev != Ty::Err && t != Ty::Err {
+                                a.errors.push(SemaError {
+                                    msg: format!(
+                                        "return type mismatch: {} then {}",
+                                        prev.show(a),
+                                        t.show(a)
+                                    ),
+                                    line: st.span.line,
+                                    col: st.span.col,
+                                    module: module.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            };
+            collect(then, &mut seen);
+            for (_, b) in elifs {
+                collect(b, &mut seen);
             }
+            if let Some(b) = els {
+                collect(b, &mut seen);
+            }
+            seen
         }
         StmtKind::While { cond, body } => {
             let ct = infer_expr(cond, module, a, ctx);
@@ -961,28 +1056,6 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
             infer_expr(e, module, a, ctx);
             None
         }
-    }
-}
-
-/// Whether a block definitely returns (last statement is a return, or an
-/// if/elif/else chain where every branch does). Loops do not count.
-fn block_returns(stmts: &[Stmt], module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Option<Ty> {
-    let last = stmts.last()?;
-    match &last.kind {
-        StmtKind::Return(v) => Some(match v {
-            Some(e) => infer_expr(e, module, a, ctx),
-            None => Ty::Void,
-        }),
-        StmtKind::If { then, elifs, els, .. } => {
-            let els = els.as_ref()?;
-            let mut acc = block_returns(then, module, a, ctx)?;
-            for (_, b) in elifs {
-                acc = block_returns(b, module, a, ctx)?;
-            }
-            block_returns(els, module, a, ctx)?;
-            Some(acc)
-        }
-        _ => None,
     }
 }
 

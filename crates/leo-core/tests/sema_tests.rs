@@ -32,10 +32,19 @@ fn assert_one_error(a: &sema::Analysis, needle: &str, src: &str) {
 }
 
 #[test]
-fn fib_infers_int_everywhere() {
-    let a = check("fn fib(n: int):\n  if n < 2:\n    return n\n  return fib(n - 1) + fib(n - 2)\n\nfn main():\n  print(fib(10))\n");
+fn recursive_fib_needs_declared_return() {
+    let a = check("fn fib(n: int) -> int:\n  if n < 2:\n    return n\n  return fib(n - 1) + fib(n - 2)\n\nfn main():\n  print(fib(10))\n");
     assert_no_errors(&a, "");
     assert_eq!(a.fns["f_main_fib"].ret, sema::Ty::Int);
+    let b = check("fn fib(n: int):\n  if n < 2:\n    return n\n  return fib(n - 1) + fib(n - 2)\n\nfn main():\n  print(fib(10))\n");
+    assert_one_error(&b, "calls itself", "");
+}
+
+#[test]
+fn non_recursive_inference_still_works() {
+    let a = check("fn add(a: int, b: int):\n  return a + b\n\nfn main():\n  print(add(2, 3))\n");
+    assert_no_errors(&a, "");
+    assert_eq!(a.fns["f_main_add"].ret, sema::Ty::Int);
 }
 
 #[test]
