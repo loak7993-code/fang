@@ -621,17 +621,33 @@ void leo_sort_i64_radix(int64_t* a, int64_t n) {
         leo_isort_i64_insertion(a, n);
         return;
     }
+    /* Offset bias: keys become x - min, so the pass count tracks the
+       actual data range. Values spanning zero compact to 31 bits. */
+    int64_t mn = a[0], mx = a[0];
+    for (int64_t i = 1; i < n; i++) {
+        if (a[i] < mn) mn = a[i];
+        if (a[i] > mx) mx = a[i];
+    }
+    uint64_t range = (uint64_t)mx - (uint64_t)mn;
+    if (range == 0) return; /* all equal */
+    int nbits = 0;
+    while (nbits < 64 && (range >> nbits) != 0) nbits++;
+    int passes = (nbits + 10) / 11;
     uint64_t* buf = (uint64_t*)malloc((size_t)n * sizeof(uint64_t));
     if (!buf) leo_panic("out of memory", "<runtime>", 0);
     uint64_t* src = (uint64_t*)a;
-    for (int64_t i = 0; i < n; i++) src[i] ^= 0x8000000000000000ULL;
-    uint64_t* dst = buf;
-    for (int shift = 0; shift < 64; shift += 11) {
-        int bits = (64 - shift < 11) ? (int)(64 - shift) : 11;
+    for (int64_t i = 0; i < n; i++) src[i] -= (uint64_t)mn;
+    for (int p = 0; p < passes; p++) {
+        int shift = p * 11;
+        int bits = nbits - shift;
+        if (bits > 11) bits = 11;
+        /* Strict ping-pong between the two buffers; an odd pass count
+           pays one copy back at the end, an even count lands in a. */
+        uint64_t* dst = (p % 2 == 0) ? buf : (uint64_t*)a;
         int count[2048];
         memset(count, 0, sizeof(count));
-        int64_t mask = ((int64_t)1 << bits) - 1;
-        for (int64_t i = 0; i < n; i++) count[(src[i] >> shift) & (uint64_t)mask]++;
+        uint64_t mask = (bits >= 64) ? ~0ULL : ((1ULL << bits) - 1);
+        for (int64_t i = 0; i < n; i++) count[(src[i] >> shift) & mask]++;
         int64_t total = 0;
         for (int b = 0; b < (1 << bits); b++) {
             int64_t c = count[b];
@@ -639,15 +655,16 @@ void leo_sort_i64_radix(int64_t* a, int64_t n) {
             total += c;
         }
         for (int64_t i = 0; i < n; i++) {
-            int b = (int)((src[i] >> shift) & (uint64_t)mask);
+            int b = (int)((src[i] >> shift) & mask);
             dst[count[b]++] = src[i];
         }
-        uint64_t* swap = src; src = dst; dst = swap;
+        src = dst;
     }
-    /* src now holds the sorted biased keys; if the last pass wrote into
-       buf, copy back, then unbias. */
-    if (src != (uint64_t*)a) memcpy(a, src, (size_t)n * sizeof(uint64_t));
-    for (int64_t i = 0; i < n; i++) a[i] = (int64_t)((uint64_t)a[i] ^ 0x8000000000000000ULL);
+    if (src != (uint64_t*)a) {
+        memcpy(a, src, (size_t)n * sizeof(uint64_t));
+        src = (uint64_t*)a;
+    }
+    for (int64_t i = 0; i < n; i++) a[i] = (int64_t)((uint64_t)a[i] + (uint64_t)mn);
     free(buf);
 }
 

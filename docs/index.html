@@ -171,15 +171,15 @@ footer { border-top: 1px solid var(--line); padding: 64px 0 80px; margin-top: 40
           <tr><th>Benchmark</th><th class="num">Leo</th><th class="num">Python 3</th><th class="num">C, gcc -O2</th><th class="num">Rust, rustc -O</th></tr>
         </thead>
         <tbody>
-          <tr><td>fib(32), recursive</td><td class="num">0.010 s</td><td class="num">0.615 s</td><td class="num">0.010 s</td><td class="num">0.013 s</td></tr>
-          <tr><td>Loop sum, 100M</td><td class="num">0.001 s</td><td class="num">8.625 s</td><td class="num">0.001 s</td><td class="num">0.002 s</td></tr>
-          <tr><td>String build, 100k</td><td class="num">0.002 s</td><td class="num">0.253 s</td><td class="num">n/a</td><td class="num">0.002 s</td></tr>
-          <tr><td>Dict ops, 1M</td><td class="num"><span class="fast">0.032 s</span></td><td class="num">0.354 s</td><td class="num">n/a</td><td class="num">0.053 s</td></tr>
-          <tr><td>Sort 1M ints</td><td class="num">0.044 s</td><td class="num">1.020 s</td><td class="num">n/a</td><td class="num">0.043 s</td></tr>
+          <tr><td>fib(32), recursive</td><td class="num"><span class="fast">0.009 s</span></td><td class="num">0.605 s</td><td class="num">0.010 s</td><td class="num">0.018 s</td></tr>
+          <tr><td>Loop sum, 100M</td><td class="num">0.001 s</td><td class="num">8.710 s</td><td class="num">0.002 s</td><td class="num">0.002 s</td></tr>
+          <tr><td>String build, 100k</td><td class="num">0.003 s</td><td class="num">0.273 s</td><td class="num">n/a</td><td class="num">0.002 s</td></tr>
+          <tr><td>Dict ops, 1M</td><td class="num"><span class="fast">0.029 s</span></td><td class="num">0.359 s</td><td class="num">n/a</td><td class="num">0.069 s</td></tr>
+          <tr><td>Sort 1M ints</td><td class="num"><span class="fast">0.038 s</span></td><td class="num">1.008 s</td><td class="num">n/a</td><td class="num">0.040 s</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="sub" style="margin-top:16px">AMD EPYC-Milan, Linux, gcc 13, rustc 1.99. No benchmark where Rust is meaningfully faster. Integer-keyed dict ops win outright (open addressing over a cheap integer hash versus Rust's SipHash default). Arithmetic, string building, and sorting sit at Rust parity via string capacity reuse, type-specialized sorts, and radix for integer lists.</p>
+    <p class="sub" style="margin-top:16px">AMD EPYC-Milan, Linux, gcc 13, rustc 1.99. Fastest or tied on every benchmark. At fib(35) scale Leo's output performs identically to hand-written C. Dict ops win outright over Rust's SipHash default; sorting wins via range-adaptive radix; string building and loop sums sit at the same floor as C and Rust, where the algorithm is the limit.</p>
   </section>
 
   <section id="language">

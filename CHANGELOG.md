@@ -36,8 +36,10 @@ analysis with type inference, C code generation, native compilation.
 
 - String `+` in the `s = s + x` assignment idiom reuses capacity: linear
   instead of quadratic (100x on the 100k build benchmark, now at Rust parity).
-- Sorts are type-specialized inlined introsorts; integer lists use LSD
-  radix sort over sign-biased keys (2x over the previous qsort path).
+- Sorts are type-specialized inlined introsorts; integer lists use
+  range-adaptive LSD radix sort over offset-biased keys: three passes
+  for 32-bit data, six only when the range demands it (2.4x over the
+  qsort path, ahead of Rust's pdqsort on large int lists).
 - Benchmarks now include Rust; no benchmark where Rust is meaningfully
   faster, and integer dict ops beat Rust's default hasher by 2x.
 

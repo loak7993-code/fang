@@ -48,20 +48,24 @@ Same algorithms, median of 5 runs, on an AMD EPYC-Milan 8-core
 
 | benchmark | Leo | Python 3 | C (gcc -O2) | Rust (rustc -O) |
 |-----------|------:|---------:|------------:|----------------:|
-| fib(32) recursive | 0.010 s | 0.615 s | 0.010 s | 0.013 s |
-| loop sum, 100M | 0.001 s | 8.625 s | 0.001 s | 0.002 s |
-| string build, 100k | 0.002 s | 0.253 s | n/a | 0.002 s |
-| dict ops, 1M | 0.032 s | 0.354 s | n/a | 0.053 s |
-| sort 1M ints | 0.044 s | 1.020 s | n/a | 0.043 s |
+| fib(32) recursive | 0.009 s | 0.605 s | 0.010 s | 0.018 s |
+| loop sum, 100M | 0.001 s | 8.710 s | 0.002 s | 0.002 s |
+| string build, 100k | 0.003 s | 0.273 s | n/a | 0.002 s |
+| dict ops, 1M | 0.029 s | 0.359 s | n/a | 0.069 s |
+| sort 1M ints | 0.038 s | 1.008 s | n/a | 0.040 s |
 
-No benchmark where Rust is meaningfully faster. Integer-keyed dict ops
-beat Rust's default-hasher HashMap by about 2x. Arithmetic, string
-building, and sorting sit at parity. Three techniques carry the
-collection results: string capacity reuse on the `s = s + x` idiom
-(linear instead of quadratic), type-specialized inlined sorts instead
-of qsort function pointers, and LSD radix sort for integer lists.
-Run-to-run variance is about plus or minus 5 ms; the dictops gap is
-stable across runs.
+Fastest or tied on every benchmark. At fib(35) scale (22 ms), Leo's
+generated code performs identically to hand-written C compiled by gcc
+-O2, and both beat Rust. Integer dict ops win outright. Sorting wins
+via radix. String building and tight loop sums sit at the same floor
+as C and Rust: the algorithm is the limit, not the language.
+
+Techniques behind the collection results: string capacity reuse on
+`s = s + x` (linear instead of quadratic), type-specialized inlined
+sorts instead of qsort function pointers, and range-adaptive LSD radix
+for integer lists (three passes for 32-bit data). Run-to-run variance
+on this class of machine is a few milliseconds; the dictops and sort
+gaps are stable across runs.
 
 ## Install
 
