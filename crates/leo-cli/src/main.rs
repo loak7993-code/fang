@@ -559,11 +559,8 @@ fn cmd_repl() -> ExitCode {
         stmts: String::new(),
     };
     let mut prev_output: Vec<String> = Vec::new();
-    loop {
-        let line = match rl.readline(">>> ") {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+    while let Ok(raw) = rl.readline(">>> ") {
+        let line = raw;
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -583,24 +580,21 @@ fn cmd_repl() -> ExitCode {
             // A definition header opens a block: read indented lines until
             // a line starts at column zero.
             if line.ends_with(':') && !line.starts_with("import ") {
-                loop {
-                    match rl.readline("... ") {
-                        Ok(cont) => {
-                            let cont = cont.trim_end();
-                            if cont.trim().is_empty() {
-                                session.defs.push('\n');
-                                continue;
-                            }
-                            if !cont.starts_with(' ') && !cont.starts_with('\t') {
-                                // End of block; process this line as new input.
-                                rl.add_history_entry(cont).ok();
-                                process_repl_line(&mut rl, &mut session, cont, &mut prev_output, &dir);
-                                break;
-                            }
-                            session.defs.push_str(&cont);
+                'def_block: {
+                    while let Ok(cont) = rl.readline("... ") {
+                        let cont = cont.trim_end();
+                        if cont.trim().is_empty() {
                             session.defs.push('\n');
+                            continue;
                         }
-                        Err(_) => break,
+                        if !cont.starts_with(' ') && !cont.starts_with('\t') {
+                            // End of block; process this line as new input.
+                            rl.add_history_entry(cont).ok();
+                            process_repl_line(&mut rl, &mut session, cont, &mut prev_output, &dir);
+                            break 'def_block;
+                        }
+                        session.defs.push_str(cont);
+                        session.defs.push('\n');
                     }
                 }
             }
@@ -738,13 +732,12 @@ fn collect_tests(dir: &Path, out: &mut Vec<PathBuf>) {
                 if name != "leo_packages" && !name.starts_with('.') {
                     collect_tests(&p, out);
                 }
-            } else if p.extension().is_some_and(|x| x == "leo") {
-                if p.file_name()
+            } else if p.extension().is_some_and(|x| x == "leo")
+                && p.file_name()
                     .and_then(|n| n.to_str())
                     .is_some_and(|n| n.ends_with("_test.leo"))
-                {
-                    out.push(p);
-                }
+            {
+                out.push(p);
             }
         }
     }
