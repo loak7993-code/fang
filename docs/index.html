@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leo — Looks like Python. Runs like C.</title>
+<meta name="description" content="Leo is a small compiled language with Python-shaped syntax and native speed. Learn it in an afternoon, ship it anywhere C ships.">
+<style>
+@font-face {
+  font-family: "Geist Sans";
+  src: url("fonts/sans.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("fonts/mono.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+:root {
+  --bg: #050505;
+  --panel: #101012;
+  --panel-2: #17181A;
+  --line: #1F2023;
+  --text: #F4F4F5;
+  --text-2: #A1A1A6;
+  --accent: #3B82F6;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Geist Sans", ui-sans-serif, system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+code, pre, .mono { font-family: "Geist Mono", ui-monospace, monospace; }
+
+.glow {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    radial-gradient(560px 320px at 12% -4%, rgba(59,130,246,0.13), transparent 70%),
+    radial-gradient(520px 300px at 96% 8%, rgba(59,130,246,0.07), transparent 70%);
+}
+.wrap { position: relative; z-index: 1; max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+nav {
+  position: sticky; top: 0; z-index: 10;
+  backdrop-filter: blur(14px);
+  background: rgba(5,5,5,0.72);
+  border-bottom: 1px solid var(--line);
+}
+nav .wrap { display: flex; align-items: center; gap: 28px; height: 60px; }
+nav .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: 0.2px; }
+nav .brand img { width: 22px; height: 22px; }
+nav a { color: var(--text-2); text-decoration: none; font-size: 14px; }
+nav a:hover { color: var(--text); }
+
+header { padding: 108px 0 84px; }
+h1 { font-size: 56px; font-weight: 600; line-height: 1.08; letter-spacing: -1.4px; }
+h1 .accent { color: var(--accent); }
+.tagline { margin-top: 18px; font-size: 21px; color: var(--text-2); max-width: 640px; }
+.cta { margin-top: 34px; display: flex; gap: 12px; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; align-items: center; height: 44px; padding: 0 22px;
+  border-radius: 8px; font-size: 15px; font-weight: 500; text-decoration: none;
+  transition: transform 0.15s cubic-bezier(0.2,0,0,1), background 0.15s;
+}
+.btn:active { transform: scale(0.98); }
+.btn-primary { background: var(--accent); color: #050505; }
+.btn-primary:hover { background: #60A5FA; }
+.btn-ghost { border: 1px solid var(--line); color: var(--text); background: rgba(255,255,255,0.02); }
+.btn-ghost:hover { border-color: #3A3A3E; }
+
+section { padding: 56px 0; border-top: 1px solid var(--line); }
+h2 { font-size: 28px; font-weight: 600; letter-spacing: -0.4px; margin-bottom: 8px; }
+.sub { color: var(--text-2); margin-bottom: 30px; max-width: 620px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.card {
+  background: var(--panel); border-radius: 12px; padding: 26px;
+}
+.card h3 { font-size: 16px; font-weight: 600; margin-bottom: 10px; }
+.card p { color: var(--text-2); font-size: 14.5px; }
+
+pre {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 22px; overflow-x: auto; font-size: 13.5px; line-height: 1.65;
+}
+pre .c { color: #6B7280; }
+pre .k { color: #C084FC; }
+pre .s { color: #7DD3FC; }
+pre .n { color: #FDBA74; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; color: var(--text-2); font-weight: 500; font-size: 13px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+td { padding: 11px 14px; border-bottom: 1px solid var(--line); }
+td.num, th.num { text-align: right; font-family: "Geist Mono", monospace; }
+td .fast { color: var(--accent); }
+tr:hover td { background: rgba(255,255,255,0.015); }
+.tbl { background: var(--panel); border-radius: 12px; padding: 8px; overflow-x: auto; }
+
+.pill {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 12px;
+  border-radius: 999px; border: 1px solid var(--line); background: rgba(255,255,255,0.02);
+  font-size: 12.5px; color: var(--text-2);
+}
+
+footer { border-top: 1px solid var(--line); padding: 64px 0 80px; margin-top: 40px; }
+.foot-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 32px; }
+.foot-grid h4 { font-size: 13px; color: var(--text-2); font-weight: 500; margin-bottom: 14px; }
+.foot-grid a { display: block; color: var(--text); text-decoration: none; font-size: 14px; padding: 3px 0; }
+.foot-grid a:hover { color: var(--accent); }
+.foot-note { margin-top: 48px; color: var(--text-2); font-size: 13px; }
+
+.copybtn {
+  float: right; background: none; border: 1px solid var(--line); color: var(--text-2);
+  border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer;
+  font-family: "Geist Sans", sans-serif;
+}
+.copybtn:hover { color: var(--text); border-color: #3A3A3E; }
+
+@media (max-width: 720px) {
+  h1 { font-size: 40px; }
+  .foot-grid { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="glow"></div>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#"><img src="logo.svg" alt="Leo logo"> leo</a>
+    <a href="#speed">Speed</a>
+    <a href="#language">Language</a>
+    <a href="#stdlib">Standard library</a>
+    <a href="#interop">Interop</a>
+    <a href="https://github.com/leonxlnx/leo">GitHub</a>
+  </div>
+</nav>
+
+<div class="wrap">
+  <header>
+    <h1>Looks like Python.<br>Runs like <span class="accent">C</span>.</h1>
+    <p class="tagline">Leo is a small compiled language with Python-shaped syntax and
+    native speed. Learn it in an afternoon. Ship it anywhere C ships: servers,
+    CLI tools, kernels, desktop, embedded.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#language">Read the 15-minute tutorial</a>
+      <a class="btn btn-ghost" href="#speed">See the numbers</a>
+    </div>
+  </header>
+
+  <section id="speed">
+    <h2>Measured, not promised</h2>
+    <p class="sub">Same algorithms, median of five runs. Run the suite yourself:
+    <span class="mono">bench/run.sh</span> ships in the repository.</p>
+    <div class="tbl">
+      <table>
+        <thead>
+          <tr><th>Benchmark</th><th class="num">Leo</th><th class="num">Python 3</th><th class="num">C, gcc -O2</th><th class="num">Leo vs Python</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>fib(32), recursive</td><td class="num">0.009 s</td><td class="num">0.635 s</td><td class="num">0.010 s</td><td class="num"><span class="fast">71x</span></td></tr>
+          <tr><td>Loop sum, 100M</td><td class="num">0.001 s</td><td class="num">8.993 s</td><td class="num">0.001 s</td><td class="num"><span class="fast">9000x</span></td></tr>
+          <tr><td>String build, 100k</td><td class="num">0.216 s</td><td class="num">0.258 s</td><td class="num">n/a</td><td class="num">1.2x</td></tr>
+          <tr><td>Dict ops, 1M</td><td class="num">0.037 s</td><td class="num">0.399 s</td><td class="num">n/a</td><td class="num"><span class="fast">11x</span></td></tr>
+          <tr><td>Sort 1M ints</td><td class="num">0.184 s</td><td class="num">1.091 s</td><td class="num">n/a</td><td class="num"><span class="fast">6x</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub" style="margin-top:16px">AMD EPYC-Milan, Linux, gcc 13. Arithmetic lands at C parity; collection-heavy code is 6 to 11 times Python.</p>
+  </section>
+
+  <section id="language">
+    <h2>The whole language fits in one sitting</h2>
+    <p class="sub">Under 30 reserved words. Ten of them cover a beginner's first hour.
+    Type annotations only on function parameters; everything else is inferred.</p>
+    <pre><button class="copybtn" onclick="cp(this)">copy</button><span class="c"># fib.leo — runs with: leo run fib.leo</span>
+<span class="k">import</span> math
+
+<span class="k">struct</span> Vec2:
+  x: <span class="k">float</span>
+  y: <span class="k">float</span>
+
+<span class="k">fn</span> Vec2.norm(self) -> <span class="k">float</span>:
+  <span class="k">return</span> math.sqrt(self.x * self.x + self.y * self.y)
+
+<span class="k">fn</span> fib(n: <span class="k">int</span>) -> <span class="k">int</span>:
+  <span class="k">if</span> n < <span class="n">2</span>:
+    <span class="k">return</span> n
+  <span class="k">return</span> fib(n - <span class="n">1</span>) + fib(n - <span class="n">2</span>)
+
+<span class="k">fn</span> main():
+  <span class="k">let</span> v = Vec2(<span class="n">3.0</span>, <span class="n">4.0</span>)
+  <span class="k">print</span>(<span class="s">f"norm = {v.norm()}"</span>)
+  <span class="k">let</span> xs = [<span class="n">3</span>, <span class="n">1</span>, <span class="n">2</span>]
+  xs.sort()
+  <span class="k">print</span>(xs[<span class="n">0</span>], xs[-<span class="n">1</span>], len(xs))</pre>
+  </section>
+
+  <section>
+    <h2>What you get</h2>
+    <div class="grid">
+      <div class="card"><h3>Native binaries</h3><p>One command produces a standalone
+      executable. No interpreter, no VM, no runtime pauses. Reference counting
+      releases memory deterministically at function exit.</p></div>
+      <div class="card"><h3>The whole C ecosystem</h3><p>Declare any fixed-arity C
+      function and call it. GUI toolkits, databases, syscalls, kernel interfaces:
+      <span class="mono">extern fn</span> reaches all of them.</p></div>
+      <div class="card"><h3>Freestanding builds</h3><p><span class="mono">--freestanding</span>
+      compiles with no runtime and no libc, with inline
+      <span class="mono">asm</span> for the parts hardware needs. Target any
+      triple your toolchain knows.</p></div>
+      <div class="card"><h3>Packages without infrastructure</h3><p>A package is a
+      git repository. <span class="mono">leo add</span> clones and pins it.
+      No registry, no account, no server to maintain.</p></div>
+      <div class="card"><h3>One canonical style</h3><p><span class="mono">leo fmt</span>
+      formats everything the same way. Style arguments end here.</p></div>
+      <div class="card"><h3>A tutorial that cannot rot</h3><p>Every code block in
+      the tutorial is extracted and executed by the test suite. If an example
+      breaks, the build fails.</p></div>
+    </div>
+  </section>
+
+  <section id="stdlib">
+    <h2>Standard library</h2>
+    <p class="sub">Written in Leo itself, embedded in the compiler binary.
+    The JSON parser is pure Leo, which keeps the language honest.</p>
+    <div style="display:flex; gap:10px; flex-wrap:wrap">
+      <span class="pill">io</span><span class="pill">str</span><span class="pill">list</span>
+      <span class="pill">dict</span><span class="pill">math</span><span class="pill">os</span>
+      <span class="pill">fs</span><span class="pill">time</span><span class="pill">json</span>
+      <span class="pill">net</span>
+    </div>
+  </section>
+
+  <section id="interop">
+    <h2>Reaching C</h2>
+    <pre><button class="copybtn" onclick="cp(this)">copy</button><span class="c"># any C function, declared once</span>
+<span class="k">extern fn</span> sqrt(x: <span class="k">float</span>) -> <span class="k">float</span> <span class="k">from</span> <span class="s">"math.h"</span>
+
+<span class="k">fn</span> main():
+  <span class="k">print</span>(sqrt(<span class="n">2.0</span>))
+
+<span class="c"># kernels and bare metal</span>
+<span class="k">fn</span> main():
+  <span class="k">asm</span>(<span class="s">"nop"</span>)</pre>
+    <p class="sub" style="margin-top:16px">
+    <span class="mono">leo build kernel.leo --freestanding --target x86_64-elf</span>
+    emits C with no runtime, links nothing, and expects your crt0.</p>
+  </section>
+
+  <footer>
+    <div class="foot-grid">
+      <div>
+        <h4>Leo</h4>
+        <p style="color:var(--text-2); font-size:14px">A small compiled language with
+        Python-shaped syntax and native speed. MIT licensed. Version 0.1.0.</p>
+      </div>
+      <div>
+        <h4>Learn</h4>
+        <a href="#language">The tutorial</a>
+        <a href="#speed">Benchmarks</a>
+        <a href="#interop">C interop</a>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <a href="https://github.com/leonxlnx/leo/blob/main/LEARN.md">LEARN.md</a>
+        <a href="https://github.com/leonxlnx/leo/blob/main/SPEC.md">SPEC.md</a>
+        <a href="https://github.com/leonxlnx/leo/blob/main/STDLIB.md">STDLIB.md</a>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <a href="https://github.com/leonxlnx/leo">GitHub</a>
+        <a href="https://github.com/leonxlnx/leo/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/leonxlnx/leo/blob/main/LICENSE">License</a>
+      </div>
+    </div>
+    <p class="foot-note">Measured on AMD EPYC-Milan, Linux, gcc 13, median of five runs.
+    Leo 0.1.0. Geist font by Vercel, SIL OFL 1.1.</p>
+  </footer>
+</div>
+
+<script>
+function cp(btn) {
+  var code = btn.parentElement.textContent.replace(/^copy\s*/, "");
+  navigator.clipboard.writeText(code).then(function () {
+    btn.textContent = "copied";
+    setTimeout(function () { btn.textContent = "copy"; }, 1400);
+  });
+}
+</script>
+</body>
+</html>
