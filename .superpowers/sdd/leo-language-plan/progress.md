@@ -46,3 +46,12 @@ in the binary; conformance harness with expected outputs).
   Ruling: externs keep mangled registry keys but call and prototype by their
   raw C symbol; prototypes are not emitted at all since the header declares
   them.
+
+Task M8: complete (json pure Leo, net TCP/HTTP, examples, benchmarks
+measured: fib 0.009s vs py 0.635s vs C 0.010s; float()/int() builtins)
+Task M9: complete (README, LEARN 18/18 blocks verified, SPEC, STDLIB,
+CHANGELOG, LICENSE, install.sh, CI, logo, docs page: overflow clean at
+390/768/1440, monochrome + one accent)
+Fresh checkout verified: clone -> build 18.6s -> 67 tests green ->
+learn blocks green -> benchmarks run -> cargo install works.
+Final review: dispatched to fresh-context reviewer.
