@@ -762,6 +762,25 @@ impl<'a> FnGen<'a> {
                 match target {
                     LValue::Ident(n) => {
                         let v = self.lookup(n).unwrap().clone();
+                        // Fast path for the string-building idiom
+                        // `s = s + rhs`: concat_assign consumes the old
+                        // reference and appends in place when the string is
+                        // uniquely held with spare capacity.
+                        if v.ty == Ty::Str {
+                            if let ExprKind::Binary(BinOp::Add, l, r) = &value.kind {
+                                if let ExprKind::Ident(lname) = &l.kind {
+                                    if lname == n {
+                                        let (rhs_code, _, _) = self.gen_expr(r, g);
+                                        self.w(&format!(
+                                            "f.{} = leo_str_concat_assign(f.{}, {});",
+                                            v.field, v.field, rhs_code
+                                        ));
+                                        self.flush_temps(g);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
                         // The old value is released before the new one is
                         // stored; materialize the RHS first so expressions
                         // reading the old value stay valid.

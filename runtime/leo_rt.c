@@ -33,19 +33,45 @@ leo_str* leo_str_new(const char* data, int64_t len) {
     if (!s) leo_panic("out of memory", "<runtime>", 0);
     s->rc = 1;
     s->len = len;
+    s->cap = len;
     if (len > 0 && data) memcpy(s->bytes, data, (size_t)len);
     s->bytes[len] = '\0';
     return s;
 }
 
 leo_str* leo_str_concat(leo_str* a, leo_str* b) {
-    leo_str* s = (leo_str*)malloc(sizeof(leo_str) + (size_t)(a->len + b->len) + 1);
+    int64_t n = a->len + b->len;
+    leo_str* s = (leo_str*)malloc(sizeof(leo_str) + (size_t)n + 1);
     if (!s) leo_panic("out of memory", "<runtime>", 0);
     s->rc = 1;
-    s->len = a->len + b->len;
+    s->len = n;
+    s->cap = n;
     if (a->len > 0) memcpy(s->bytes, a->bytes, (size_t)a->len);
     if (b->len > 0) memcpy(s->bytes + a->len, b->bytes, (size_t)b->len);
-    s->bytes[s->len] = '\0';
+    s->bytes[n] = '\0';
+    return s;
+}
+
+leo_str* leo_str_concat_assign(leo_str* a, leo_str* b) {
+    if (a && b && a != b && a->rc == 1 && a->cap >= a->len + b->len) {
+        if (b->len > 0) memcpy(a->bytes + a->len, b->bytes, (size_t)b->len);
+        a->len += b->len;
+        a->bytes[a->len] = '\0';
+        return a;
+    }
+    if (!a) return leo_str_new(b ? b->bytes : "", b ? b->len : 0);
+    if (!b) return a;
+    int64_t n = a->len + b->len;
+    int64_t cap = n * 2;
+    leo_str* s = (leo_str*)malloc(sizeof(leo_str) + (size_t)cap + 1);
+    if (!s) leo_panic("out of memory", "<runtime>", 0);
+    s->rc = 1;
+    s->len = n;
+    s->cap = cap;
+    if (a->len > 0) memcpy(s->bytes, a->bytes, (size_t)a->len);
+    if (b->len > 0) memcpy(s->bytes + a->len, b->bytes, (size_t)b->len);
+    s->bytes[n] = '\0';
+    leo_str_decref(a);
     return s;
 }
 
@@ -351,6 +377,7 @@ leo_str* leo_fs_read_file(leo_str* path) {
     if (!s) leo_panic("out of memory", "<runtime>", 0);
     s->rc = 1;
     s->len = size;
+    s->cap = size;
     if (size > 0 && fread(s->bytes, 1, (size_t)size, f) != (size_t)size) {
         fclose(f);
         leo_panic("fs.read_file failed mid-read", __FILE__, __LINE__);
@@ -514,26 +541,120 @@ void leo_tcp_close(void* sock) {
 /* Sorting                                                             */
 /* ------------------------------------------------------------------ */
 
-static int leo_cmp_i64(const void* a, const void* b) {
-    int64_t x = *(const int64_t*)a, y = *(const int64_t*)b;
-    return x < y ? -1 : x > y ? 1 : 0;
-}
-static int leo_cmp_f64(const void* a, const void* b) {
-    double x = *(const double*)a, y = *(const double*)b;
-    return x < y ? -1 : x > y ? 1 : 0;
-}
-static int leo_cmp_str(const void* a, const void* b) {
-    leo_str* x = *(leo_str* const*)a;
-    leo_str* y = *(leo_str* const*)b;
-    return leo_str_cmp(x, y);
+#define LEO_LT_I64(x, y) ((x) < (y))
+#define LEO_LT_F64(x, y) ((x) < (y))
+#define LEO_LT_STR(x, y) (leo_str_cmp(x, y) < 0)
+
+/* Type-specialized introsorts: insertion sort for small ranges,
+   median-of-three quicksort inlined per type, heapsort when the
+   recursion gets deep. No function pointers on the comparison path. */
+
+#define LEO_ISORT_THRESHOLD 24
+
+#define LEO_INTROSORT(NAME, T, LT)                                          \
+static void NAME##_insertion(T* a, int64_t n) {                             \
+    for (int64_t i = 1; i < n; i++) {                                       \
+        T v = a[i];                                                          \
+        int64_t j = i - 1;                                                   \
+        while (j >= 0 && LT(a[j], v)) { a[j + 1] = a[j]; j--; }             \
+        a[j + 1] = v;                                                        \
+    }                                                                        \
+}                                                                            \
+static void NAME##_sift(T* a, int64_t start, int64_t end) {                  \
+    int64_t root = start;                                                    \
+    while (root * 2 + 1 <= end) {                                            \
+        int64_t child = root * 2 + 1;                                         \
+        if (child + 1 <= end && LT(a[child], a[child + 1])) child++;         \
+        if (LT(a[root], a[child])) {                                          \
+            T t = a[root]; a[root] = a[child]; a[child] = t;                  \
+            root = child;                                                     \
+        } else return;                                                        \
+    }                                                                        \
+}                                                                            \
+static void NAME##_heapsort(T* a, int64_t n) {                               \
+    for (int64_t start = (n - 2) / 2; start >= 0; start--)                    \
+        NAME##_sift(a, start, n - 1);                                          \
+    for (int64_t end = n - 1; end > 0; end--) {                               \
+        T t = a[end]; a[end] = a[0]; a[0] = t;                                 \
+        NAME##_sift(a, 0, end - 1);                                            \
+    }                                                                        \
+}                                                                            \
+static void NAME##_recurse(T* a, int64_t n, int64_t depth) {                  \
+    while (n > LEO_ISORT_THRESHOLD) {                                         \
+        if (depth == 0) { NAME##_heapsort(a, n); return; }                     \
+        depth--;                                                              \
+        int64_t mid = n / 2;                                                  \
+        T t;                                                                  \
+        /* median of three to start */                                        \
+        if (LT(a[mid], a[0])) { t = a[0]; a[0] = a[mid]; a[mid] = t; }         \
+        if (LT(a[n - 1], a[0])) { t = a[0]; a[0] = a[n - 1]; a[n - 1] = t; }   \
+        if (LT(a[n - 1], a[mid])) { t = a[mid]; a[mid] = a[n - 1]; a[n - 1] = t; } \
+        T pivot = a[mid];                                                     \
+        int64_t i = 0, j = n - 1;                                             \
+        for (;;) {                                                            \
+            while (LT(a[i], pivot)) i++;                                       \
+            while (LT(pivot, a[j])) j--;                                      \
+            if (i >= j) break;                                                 \
+            t = a[i]; a[i] = a[j]; a[j] = t;                                   \
+            i++; j--;                                                         \
+        }                                                                    \
+        /* recurse into the smaller half, loop on the larger */               \
+        if (j + 1 < n - (j + 1)) {                                            \
+            NAME##_recurse(a, j + 1, depth);                                   \
+            a += j + 1;                                                       \
+            n -= j + 1;                                                       \
+        } else {                                                              \
+            NAME##_recurse(a + j + 1, n - (j + 1), depth);                       \
+            n = j + 1;                                                        \
+        }                                                                    \
+    }                                                                        \
+    NAME##_insertion(a, n);                                                   \
+}                                                                            \
+void NAME(T* a, int64_t n) { NAME##_recurse(a, n, 48); }
+
+LEO_INTROSORT(leo_isort_i64, int64_t, LEO_LT_I64)
+
+/* Integer sorts skip comparisons entirely: LSD radix over sign-biased
+   keys. Three passes of 11 bits each; linear time, cache-friendly. */
+void leo_sort_i64_radix(int64_t* a, int64_t n) {
+    if (n < 64) {
+        leo_isort_i64_insertion(a, n);
+        return;
+    }
+    uint64_t* buf = (uint64_t*)malloc((size_t)n * sizeof(uint64_t));
+    if (!buf) leo_panic("out of memory", "<runtime>", 0);
+    uint64_t* src = (uint64_t*)a;
+    for (int64_t i = 0; i < n; i++) src[i] ^= 0x8000000000000000ULL;
+    uint64_t* dst = buf;
+    for (int shift = 0; shift < 64; shift += 11) {
+        int bits = (64 - shift < 11) ? (int)(64 - shift) : 11;
+        int count[2048];
+        memset(count, 0, sizeof(count));
+        int64_t mask = ((int64_t)1 << bits) - 1;
+        for (int64_t i = 0; i < n; i++) count[(src[i] >> shift) & (uint64_t)mask]++;
+        int64_t total = 0;
+        for (int b = 0; b < (1 << bits); b++) {
+            int64_t c = count[b];
+            count[b] = total;
+            total += c;
+        }
+        for (int64_t i = 0; i < n; i++) {
+            int b = (int)((src[i] >> shift) & (uint64_t)mask);
+            dst[count[b]++] = src[i];
+        }
+        uint64_t* swap = src; src = dst; dst = swap;
+    }
+    /* src now holds the sorted biased keys; if the last pass wrote into
+       buf, copy back, then unbias. */
+    if (src != (uint64_t*)a) memcpy(a, src, (size_t)n * sizeof(uint64_t));
+    for (int64_t i = 0; i < n; i++) a[i] = (int64_t)((uint64_t)a[i] ^ 0x8000000000000000ULL);
+    free(buf);
 }
 
-void leo_sort_i64(int64_t* base, int64_t n) {
-    qsort(base, (size_t)n, sizeof(int64_t), leo_cmp_i64);
+void leo_sort_i64(int64_t* a, int64_t n) {
+    leo_sort_i64_radix(a, n);
 }
-void leo_sort_f64(double* base, int64_t n) {
-    qsort(base, (size_t)n, sizeof(double), leo_cmp_f64);
-}
-void leo_sort_str(leo_str** base, int64_t n) {
-    qsort(base, (size_t)n, sizeof(leo_str*), leo_cmp_str);
-}
+LEO_INTROSORT(leo_sort_f64, double, LEO_LT_F64)
+LEO_INTROSORT(leo_sort_str, leo_str*, LEO_LT_STR)
+
+

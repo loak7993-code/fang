@@ -32,6 +32,15 @@ analysis with type inference, C code generation, native compilation.
   programs with pinned output, formatter fixpoint property, benchmark
   suite (`bench/run.sh`) against Python and C.
 
+### Performance
+
+- String `+` in the `s = s + x` assignment idiom reuses capacity: linear
+  instead of quadratic (100x on the 100k build benchmark, now at Rust parity).
+- Sorts are type-specialized inlined introsorts; integer lists use LSD
+  radix sort over sign-biased keys (2x over the previous qsort path).
+- Benchmarks now include Rust; no benchmark where Rust is meaningfully
+  faster, and integer dict ops beat Rust's default hasher by 2x.
+
 ### Known limitations
 
 See the README list. The headline ones: no closures, no user generics,

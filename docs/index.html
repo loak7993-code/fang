@@ -171,15 +171,15 @@ footer { border-top: 1px solid var(--line); padding: 64px 0 80px; margin-top: 40
           <tr><th>Benchmark</th><th class="num">Leo</th><th class="num">Python 3</th><th class="num">C, gcc -O2</th><th class="num">Rust, rustc -O</th></tr>
         </thead>
         <tbody>
-          <tr><td>fib(32), recursive</td><td class="num">0.010 s</td><td class="num">0.617 s</td><td class="num">0.009 s</td><td class="num">0.013 s</td></tr>
-          <tr><td>Loop sum, 100M</td><td class="num">0.001 s</td><td class="num">8.847 s</td><td class="num">0.002 s</td><td class="num">0.002 s</td></tr>
-          <tr><td>String build, 100k</td><td class="num">0.218 s</td><td class="num">0.255 s</td><td class="num">n/a</td><td class="num">0.002 s</td></tr>
-          <tr><td>Dict ops, 1M</td><td class="num">0.049 s</td><td class="num">0.356 s</td><td class="num">n/a</td><td class="num">0.074 s</td></tr>
-          <tr><td>Sort 1M ints</td><td class="num">0.178 s</td><td class="num">0.971 s</td><td class="num">n/a</td><td class="num">0.064 s</td></tr>
+          <tr><td>fib(32), recursive</td><td class="num">0.010 s</td><td class="num">0.615 s</td><td class="num">0.010 s</td><td class="num">0.013 s</td></tr>
+          <tr><td>Loop sum, 100M</td><td class="num">0.001 s</td><td class="num">8.625 s</td><td class="num">0.001 s</td><td class="num">0.002 s</td></tr>
+          <tr><td>String build, 100k</td><td class="num">0.002 s</td><td class="num">0.253 s</td><td class="num">n/a</td><td class="num">0.002 s</td></tr>
+          <tr><td>Dict ops, 1M</td><td class="num"><span class="fast">0.032 s</span></td><td class="num">0.354 s</td><td class="num">n/a</td><td class="num">0.053 s</td></tr>
+          <tr><td>Sort 1M ints</td><td class="num">0.044 s</td><td class="num">1.020 s</td><td class="num">n/a</td><td class="num">0.043 s</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="sub" style="margin-top:16px">AMD EPYC-Milan, Linux, gcc 13, rustc 1.99. Arithmetic at C parity alongside Rust; integer-keyed dict ops beat Rust's default hasher. Two honest losses: sort (function-pointer qsort vs inlined pdqsort) and string + (fresh allocation each time; the f-string builder is linear).</p>
+    <p class="sub" style="margin-top:16px">AMD EPYC-Milan, Linux, gcc 13, rustc 1.99. No benchmark where Rust is meaningfully faster. Integer-keyed dict ops win outright (open addressing over a cheap integer hash versus Rust's SipHash default). Arithmetic, string building, and sorting sit at Rust parity via string capacity reuse, type-specialized sorts, and radix for integer lists.</p>
   </section>
 
   <section id="language">

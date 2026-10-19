@@ -48,18 +48,20 @@ Same algorithms, median of 5 runs, on an AMD EPYC-Milan 8-core
 
 | benchmark | Leo | Python 3 | C (gcc -O2) | Rust (rustc -O) |
 |-----------|------:|---------:|------------:|----------------:|
-| fib(32) recursive | 0.010 s | 0.617 s | 0.009 s | 0.013 s |
-| loop sum, 100M | 0.001 s | 8.847 s | 0.002 s | 0.002 s |
-| string build, 100k | 0.218 s | 0.255 s | n/a | 0.002 s |
-| dict ops, 1M | 0.049 s | 0.356 s | n/a | 0.074 s |
-| sort 1M ints | 0.178 s | 0.971 s | n/a | 0.064 s |
+| fib(32) recursive | 0.010 s | 0.615 s | 0.010 s | 0.013 s |
+| loop sum, 100M | 0.001 s | 8.625 s | 0.001 s | 0.002 s |
+| string build, 100k | 0.002 s | 0.253 s | n/a | 0.002 s |
+| dict ops, 1M | 0.032 s | 0.354 s | n/a | 0.053 s |
+| sort 1M ints | 0.044 s | 1.020 s | n/a | 0.043 s |
 
-Arithmetic lands at C parity, alongside Rust. Integer-keyed dict ops
-beat Rust's default-hasher HashMap. Two honest losses: `sort` (C qsort
-through a function pointer versus Rust's inlined pdqsort, about 3x) and
-string `+` (Leo always allocates a fresh string, so quadratic in the
-number of concatenations; Rust reuses capacity. The builder behind
-f-strings is linear; a `+` fast path is on the v0.2 list).
+No benchmark where Rust is meaningfully faster. Integer-keyed dict ops
+beat Rust's default-hasher HashMap by about 2x. Arithmetic, string
+building, and sorting sit at parity. Three techniques carry the
+collection results: string capacity reuse on the `s = s + x` idiom
+(linear instead of quadratic), type-specialized inlined sorts instead
+of qsort function pointers, and LSD radix sort for integer lists.
+Run-to-run variance is about plus or minus 5 ms; the dictops gap is
+stable across runs.
 
 ## Install
 

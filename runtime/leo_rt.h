@@ -28,6 +28,8 @@ static inline void leo_incref(void* p) {
 typedef struct leo_str {
     int64_t rc;
     int64_t len;
+    /* allocated capacity; len never exceeds it */
+    int64_t cap;
     char bytes[];
 } leo_str;
 
@@ -37,6 +39,9 @@ static inline void leo_str_decref(leo_str* s) {
 
 leo_str* leo_str_new(const char* data, int64_t len);
 leo_str* leo_str_concat(leo_str* a, leo_str* b);
+/* Consumes a's reference: appends in place when a is uniquely held and
+   has capacity, otherwise allocates with headroom and releases a. */
+leo_str* leo_str_concat_assign(leo_str* a, leo_str* b);
 bool leo_str_eq(leo_str* a, leo_str* b);
 int leo_str_cmp(leo_str* a, leo_str* b);
 leo_str* leo_str_slice(leo_str* s, int64_t start, int64_t end);
