@@ -4,6 +4,30 @@ All notable changes to Leo are documented here. The format follows
 [keep a changelog](https://keepachangelog.com/); versions follow
 semantic versioning.
 
+## [0.3.2] - 2026-10-20
+
+The entire language, learnable in one sitting.
+
+### Added
+
+- `leo learn` now covers the whole language: 18 interactive lessons
+  from `print` through dictionaries, structs, string methods,
+  comprehensions, functions as values, raise/try/except, imports,
+  extern C, and closures, ending in a guessing game that uses
+  everything. Every answer compiles and runs; the course is driven
+  end to end in CI (18 checks plus a wrong-answer rejection).
+- `leo cheat`: the whole language on one screen, with examples.
+- `leo doc <topic>`: instant help for any keyword, builtin, or
+  command, with runnable examples.
+
+### Fixed (found while building the course)
+
+- `d["key"]` never compiled: dict indexing demanded int keys in
+  both read and assignment positions. Now dict indexing accepts the
+  dict's own key type.
+- String literals in dict index assignments (`d["k"] = v`) were
+  never pooled, producing a reference to a nonexistent pool entry.
+
 ## [0.3.1] - 2026-10-20
 
 ### Fixed (found in a dedicated bug hunt)

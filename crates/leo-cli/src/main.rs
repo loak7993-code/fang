@@ -20,6 +20,8 @@ COMMANDS:
     repl                  interactive session (replays the session each input)
     learn                 interactive course, starts you from zero
     new <name>            create a starter project
+    cheat                 the whole language on one screen
+    doc <topic>           instant help for any word
     fmt <files...>        format source files in the canonical style
     test [dir]            discover and run *_test.leo files
     add <repo>            install a package from a git repository
@@ -69,6 +71,7 @@ static STD_MODULES: &[(&str, &str)] = &[
 
 use std::collections::HashMap;
 
+mod cheat;
 mod learn;
 
 fn main() -> ExitCode {
@@ -90,6 +93,8 @@ fn main() -> ExitCode {
         "add" => cmd_add(&args[1..]),
         "learn" => learn::cmd_learn(&args[1..]),
         "new" => learn::cmd_new(&args[1..]),
+        "cheat" => cheat::cmd_cheat(),
+        "doc" => cheat::cmd_doc(&args[1..]),
         cmd => {
             eprintln!("leo: unknown or unfinished command '{}'", cmd);
             eprint!("{}", USAGE);

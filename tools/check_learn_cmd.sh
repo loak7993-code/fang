@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drive `leo learn` end to end: every lesson's expected answer must
-# pass, every wrong answer must be caught with output shown.
+# Drive the full 18-lesson course end to end: every expected answer
+# passes, wrong answers are rejected, progress never skips.
 set -u
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LEO="${LEO:-$DIR/target/release/leo}"
@@ -15,7 +15,6 @@ fail=0
 
 lesson() {
   local num="$1" answer="$2"
-  # Feed the answer, then "quit" to exit.
   local out
   out=$(printf '%s\nquit\n' "$answer" | "$LEO" learn 2>&1)
   if echo "$out" | grep -q "correct!"; then
@@ -25,7 +24,6 @@ lesson() {
     echo "FAIL lesson $num:"
     echo "$out" | head -6
   fi
-  # The course advances progress itself; make sure we are at lesson num.
   cur=$(cat "$progress")
   if [ "$cur" != "$num" ]; then
     echo "FAIL lesson $num: progress at $cur, expected $num"
@@ -33,6 +31,9 @@ lesson() {
   fi
 }
 
+# The course array runs basics(7), dictionaries, structs, strings,
+# comprehensions, functions-as-values, errors, imports, extern C,
+# closures, then the final guessing game.
 lesson 1 'hello, leo'
 lesson 2 'leo'
 lesson 3 '7'
@@ -40,22 +41,26 @@ lesson 4 '20'
 lesson 5 '4'
 lesson 6 '1'
 lesson 7 '2'
-lesson 8 'correct!'
+lesson 8 'nova'
+lesson 9 '0.5'
+lesson 10 '1'
+lesson 11 'xs'
+lesson 12 '2'
+lesson 13 'the disk is full'
+lesson 14 '9.0'
+lesson 15 '4.0'
+lesson 16 'x'
+lesson 17 'correct!'
 
-# A wrong answer must not advance progress.
 echo 0 > "$progress"
-out=$(printf 'wronganswer\nquit\n' | "$LEO" learn 2>&1)
+out=$(printf 'nope\nquit\n' | "$LEO" learn 2>&1)
 if echo "$out" | grep -q "correct!"; then
   echo "FAIL: wrong answer accepted"
   fail=$((fail + 1))
 else
   pass=$((pass + 1))
 fi
-cur=$(cat "$progress")
-if [ "$cur" != "0" ]; then
-  echo "FAIL: progress advanced on wrong answer ($cur)"
-  fail=$((fail + 1))
-fi
+[ "$(cat "$progress")" = "0" ] || { echo "FAIL: progress moved on wrong answer"; fail=$((fail + 1)); }
 
-echo "learn: $pass checks passed, $fail failed"
+echo "learn course: $pass checks passed, $fail failed"
 [ "$fail" -eq 0 ]

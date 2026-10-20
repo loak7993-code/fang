@@ -1600,6 +1600,18 @@ impl<'a> FnGen<'a> {
                         (**elem).clone(),
                         false,
                     ),
+                    Ty::Dict(k, v) if **k == Ty::Int => (
+                        format!(
+                            "leo_dict_{}_{}_get({}, {}, {})",
+                            g.sfx(k),
+                            g.sfx(v),
+                            rc,
+                            ic,
+                            default_value(v)
+                        ),
+                        (**v).clone(),
+                        false,
+                    ),
                     Ty::Dict(k, v) => (
                         format!(
                             "leo_dict_{}_{}_get({}, {}, {})",
@@ -2872,7 +2884,12 @@ fn collect_strs(m: &Module, pool: &mut HashMap<String, String>, order: &mut Vec<
 fn collect_stmt_strs(st: &Stmt, order: &mut Vec<String>) {
     match &st.kind {
         StmtKind::Let { value, .. } => collect_expr_strs(value, order),
-        StmtKind::Assign { value, .. } => collect_expr_strs(value, order),
+        StmtKind::Assign { target, value } => {
+            collect_lvalue_strs(target, order);
+            collect_expr_strs(value, order);
+        }
+        StmtKind::TypedAssign { value, .. } => collect_expr_strs(value, order),
+        StmtKind::AssignMulti { value, .. } => collect_expr_strs(value, order),
         StmtKind::Return(Some(e)) => collect_expr_strs(e, order),
         StmtKind::Raise(e) => collect_expr_strs(e, order),
         StmtKind::Expr(e) => collect_expr_strs(e, order),
@@ -2913,6 +2930,14 @@ fn collect_stmt_strs(st: &Stmt, order: &mut Vec<String>) {
             }
         }
         _ => {}
+    }
+}
+
+fn collect_lvalue_strs(lv: &LValue, order: &mut Vec<String>) {
+    match lv {
+        LValue::Ident(_) => {}
+        LValue::Index(_, idx) => collect_expr_strs(idx, order),
+        LValue::Field(_, _) => {}
     }
 }
 

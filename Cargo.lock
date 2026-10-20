@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "leo-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "leo-core",
  "rustyline",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "leo-core"
-version = "0.3.1"
+version = "0.3.2"
 
 [[package]]
 name = "libc"

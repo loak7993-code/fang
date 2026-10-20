@@ -1667,7 +1667,10 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
         ExprKind::Index(recv, idx) => {
             let rt = infer_expr(recv, module, a, ctx);
             let it = infer_expr(idx, module, a, ctx);
-            if it != Ty::Int && it != Ty::Err {
+            // Lists and strings index with int; dicts index with their
+            // own key type.
+            let key_must_be_int = !matches!(rt, Ty::Dict(_, _) | Ty::Err);
+            if key_must_be_int && it != Ty::Int && it != Ty::Err {
                 a.err(format!("index must be int, got {}", it.show(a)), e.span, module);
             }
             match rt {
