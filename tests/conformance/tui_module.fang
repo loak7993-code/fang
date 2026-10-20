@@ -1,0 +1,23 @@
+# The tui module: screen buffers, styling, key codes as values.
+import tui
+
+s = tui.screen(20, 5)
+tui.scr_box(s, 0, 0, 20, 5)
+tui.scr_set_str(s, 5, 2, "fang")
+tui.scr_set(s, 4, 2, ">")
+row = ""
+for x in 0..20:
+  row = row + s.cells[2 * 20 + x]
+print(row)
+
+print(tui.fg(tui.RED) + "red" + tui.reset())
+print(tui.bg(tui.BLUE) == "\x1b[44m")
+print(tui.KEY_UP, tui.KEY_DOWN, tui.KEY_LEFT, tui.KEY_RIGHT)
+
+full = tui.screen(4, 2)
+tui.scr_fill(full, 0, 0, 4, 2, "#")
+print(full.cells[0], full.cells[5])
+
+edge = tui.screen(4, 4)
+tui.scr_set(edge, 99, 99, "X")
+print(edge.cells[0])

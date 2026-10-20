@@ -58,6 +58,11 @@ pub enum BinOp {
     Div,
     Mod,
     Pow,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,7 +231,7 @@ pub struct StructDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     Import { module: String, path: Option<String>, span: Span },
-    Const { name: String, value: Expr, exported: bool, span: Span },
+    Const { name: String, ann: Option<Type>, value: Expr, exported: bool, span: Span },
     Fn(FnDecl),
     Struct(StructDecl),
     /// extern fn sqrt(x: float) -> float from "math.h"

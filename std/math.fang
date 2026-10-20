@@ -57,6 +57,11 @@ export fn max(a: float, b: float) -> float:
     return a
   return b
 
+export fn rand_int(n: int) -> int:
+  if n <= 0:
+    return 0
+  rand() % n
+
 export fn random() -> float:
   return rand() / 2147483647.0
 

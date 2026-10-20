@@ -212,8 +212,20 @@ fn error_on_unknown_escape() {
 
 #[test]
 fn error_on_unknown_char() {
-    let r = tokenize_kinds("let a = 1 & 2\n");
+    let r = tokenize_kinds("let a = 1 @ 2\n");
     assert!(r.is_err());
+}
+
+#[test]
+fn bitwise_operators_tokenize() {
+    let r = tokenize_kinds("let a = 1 & 2 | 3 ^ 4 << 5 >> 6\n");
+    assert!(r.is_ok());
+}
+
+#[test]
+fn hex_and_binary_literals() {
+    let r = tokenize_kinds("let a = 0xFF\nlet b = 0b1010\n");
+    assert!(r.is_ok());
 }
 
 #[test]

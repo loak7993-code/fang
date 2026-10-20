@@ -39,6 +39,11 @@ export fn find_from(s: str, start_at: int, needle: str) -> int:
 export fn slice(s: str, start: int, end: int) -> str:
   return fang_str_slice(s, start, end)
 
+extern fn fang_str_byte_at(s: str, i: int) -> int from "fang_rt.h"
+
+export fn byte_at(s: str, i: int) -> int:
+  fang_str_byte_at(s, i)
+
 export fn to_int(s: str) -> int:
   return fang_str_to_i64(s)
 

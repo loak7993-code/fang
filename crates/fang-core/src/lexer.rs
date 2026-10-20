@@ -27,7 +27,7 @@ pub enum TokKind {
     Struct, Extern, True, False, Nil, And, Or, Not, Raise, Try, Except,
     Import, Export, From,
 
-    Plus, Minus, Star, Slash, Percent, StarStar,
+    Plus, Minus, Star, Slash, Percent, StarStar, Amp, Pipe, Caret, Shl, Shr,
     Eq, EqEq, NotEq, Lt, Gt, Le, Ge,
     LParen, RParen, LBracket, RBracket, LBrace, RBrace,
     Comma, Colon, Dot, DotDot, DotDotEq, Arrow,
@@ -192,6 +192,9 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 b'/' => self.simple(TokKind::Slash),
+                b'&' => self.simple(TokKind::Amp),
+                b'|' => self.simple(TokKind::Pipe),
+                b'^' => self.simple(TokKind::Caret),
                 b'%' => self.simple(TokKind::Percent),
                 b'=' => {
                     if self.peek2() == b'=' {
@@ -210,6 +213,8 @@ impl<'a> Lexer<'a> {
                 b'<' => {
                     if self.peek2() == b'=' {
                         self.simple2(TokKind::Le);
+                    } else if self.peek2() == b'<' {
+                        self.simple2(TokKind::Shl);
                     } else {
                         self.simple(TokKind::Lt);
                     }
@@ -217,6 +222,8 @@ impl<'a> Lexer<'a> {
                 b'>' => {
                     if self.peek2() == b'=' {
                         self.simple2(TokKind::Ge);
+                    } else if self.peek2() == b'>' {
+                        self.simple2(TokKind::Shr);
                     } else {
                         self.simple(TokKind::Gt);
                     }
@@ -383,6 +390,32 @@ impl<'a> Lexer<'a> {
     fn lex_number(&mut self) -> LexResult<()> {
         let start_pos = self.pos;
         let (line, col, start, _) = self.here();
+        // Hex 0x.. and binary 0b.. literals.
+        if self.peek() == b'0' && matches!(self.peek2(), b'x' | b'X' | b'b' | b'B') {
+            let base = if matches!(self.peek2(), b'x' | b'X') { 16 } else { 2 };
+            self.advance(); // 0
+            self.advance(); // x/b
+            let digits_start = self.pos;
+            while self.peek().is_ascii_hexdigit() {
+                self.advance();
+            }
+            let text = std::str::from_utf8(&self.src[digits_start..self.pos]).unwrap();
+            if base == 2 && text.chars().any(|c| c > '1') {
+                return err(
+                    format!("invalid binary literal 0b{}", text),
+                    line,
+                    col,
+                );
+            }
+            let v = i64::from_str_radix(text, base).map_err(|_| LexError {
+                msg: format!("invalid base-{} literal '{}'", base, text),
+                line,
+                col,
+            })?;
+            let end = self.pos as u32;
+            self.push_with(TokKind::Int(v), line, col, start, end);
+            return Ok(());
+        }
         while self.peek().is_ascii_digit() {
             self.advance();
         }
@@ -463,6 +496,34 @@ impl<'a> Lexer<'a> {
                         b'0' => '\0',
                         b'\\' => '\\',
                         b'"' => '"',
+                        b'e' => '\x1b',
+                        b'x' | b'u' => {
+                            // \xHH hex escape (u accepts \uHHHH too)
+                            let n = if e == b'x' { 2 } else { 4 };
+                            self.advance();
+                            let mut v: u32 = 0;
+                            for _ in 0..n {
+                                let h = self.peek();
+                                let d = match h {
+                                    b'0'..=b'9' => (h - b'0') as u32,
+                                    b'a'..=b'f' => (h - b'a' + 10) as u32,
+                                    b'A'..=b'F' => (h - b'A' + 10) as u32,
+                                    _ => {
+                                        return err(
+                                            "hex escape needs hex digits".to_string(),
+                                            self.line,
+                                            self.col,
+                                        )
+                                    }
+                                };
+                                v = v * 16 + d;
+                                self.advance();
+                            }
+                            let c = char::from_u32(v).unwrap_or('\u{fffd}');
+                            value.push(c);
+                            lit_buf.push(c);
+                            continue;
+                        }
                         _ => {
                             return err(
                                 format!("unknown escape '\\{}'", e as char),

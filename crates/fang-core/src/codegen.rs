@@ -108,6 +108,41 @@ impl<'a> Gen<'a> {
         }
         writeln!(self.out).unwrap();
 
+        // Collection types used as struct fields must be declared
+        // before the struct definitions; the macro stamps later
+        // complete them.
+        let insts0 = self.collect_instantiations();
+        for t in &insts0 {
+            match t {
+                Ty::List(e) => {
+                    let es = self.sfx(e);
+                    writeln!(self.out, "typedef struct fang_list_{0} fang_list_{0};", es).unwrap();
+                }
+                Ty::Dict(k, v) => {
+                    let ks = self.sfx(k);
+                    let vs = self.sfx(v);
+                    writeln!(self.out, "typedef struct fang_dict_{0}_{1} fang_dict_{0}_{1};", ks, vs).unwrap();
+                    writeln!(self.out, "typedef struct fang_dslot_{0}_{1} fang_dslot_{0}_{1};", ks, vs).unwrap();
+                }
+                Ty::Tuple(a, b) => {
+                    let asx = self.sfx(a);
+                    let bsx = self.sfx(b);
+                    writeln!(self.out, "typedef struct fang_tuple_{0}_{1} fang_tuple_{0}_{1};", asx, bsx).unwrap();
+                }
+                _ => {}
+            }
+        }
+        writeln!(self.out).unwrap();
+
+        // Module-level mutable globals: declared at file scope,
+        // initialized by __fang_globals_init before main runs.
+        for (gm, ty) in &self.a.globals {
+            writeln!(self.out, "static {} {};", self.ctype(ty), gm).unwrap();
+        }
+        if !self.a.globals.is_empty() {
+            writeln!(self.out).unwrap();
+        }
+
         // Struct definitions, dependency ordered.
         let order = struct_order(self.a);
         for mangled in &order {
@@ -206,6 +241,81 @@ impl<'a> Gen<'a> {
         let extras = format!("{}{}", extra_d, extra_f);
         self.out = self.out.replacen("/*__FANG_EXTRAS__*/", &extras, 1);
 
+        // Global initializers: one function assigning every
+        // module-level mutable value, called before the entry main.
+        if !self.a.globals.is_empty() {
+            let mut inits = String::new();
+            // (module, name, value) in module item order
+            let mut jobs: Vec<(String, String, Expr)> = Vec::new();
+            for u in self.sources {
+                let mname = &u.name;
+                for item in &u.module.items {
+                    if let Item::Const { name, value, .. } = item {
+                        let gm = format!("g_{}_{}", mname, name);
+                        if self.a.globals.contains_key(&gm) {
+                            jobs.push((mname.clone(), name.clone(), value.clone()));
+                        }
+                    }
+                }
+            }
+            for (mname, name, value) in jobs {
+                let gm = format!("g_{}_{}", mname, name);
+                let path = self
+                    .sources
+                    .iter()
+                    .find(|u| u.name == mname)
+                    .map(|u| u.path.clone())
+                    .unwrap_or_default();
+                let mut fg = FnGen {
+                    module: mname.clone(),
+                    path,
+                    a: self.a,
+                    captures: HashMap::new(),
+                    buf: String::new(),
+                    indent: 1,
+                    scopes: vec![HashMap::new()],
+                    frame: String::new(),
+                    field_n: 0,
+                    temp_n: 0,
+                    locals: Vec::new(),
+                    has_temps: Vec::new(),
+                    ret: Ty::Void,
+                };
+                let ty = self.a.globals.get(&gm).cloned().unwrap_or(Ty::Err);
+                let (code, _t, fresh) = fg.gen_expr(&value, self);
+                let assign = if self.is_rc(&ty) {
+                    let incref = if fresh { String::new() } else {
+                        format!("fang_incref((void*)({}));", code)
+                    };
+                    format!("{} = {};\n    {}", gm, code, incref)
+                } else {
+                    format!("{} = {};", gm, code)
+                };
+                fg.w(&assign);
+                fg.flush_temps(self);
+                let body = std::mem::take(&mut fg.buf);
+                inits.push_str(&format!(
+                    "static void __fang_ginit_{}_{}(void) {{\n{}\n}}\n\n",
+                    mname, name, body
+                ));
+            }
+            self.out.push_str(&inits);
+            writeln!(self.out, "static void __fang_globals_init(void) {{").unwrap();
+            for u in self.sources {
+                let mname = &u.name;
+                for item in &u.module.items {
+                    if let Item::Const { name, .. } = item {
+                        let gm = format!("g_{}_{}", mname, name);
+                        if self.a.globals.contains_key(&gm) {
+                            writeln!(self.out, "    __fang_ginit_{}_{}();", mname, name).unwrap();
+                        }
+                    }
+                }
+            }
+            writeln!(self.out, "}}").unwrap();
+            writeln!(self.out).unwrap();
+        }
+
         // Entry wrapper.
         let entry_main = format!("f_{}_main", entry);
         if self.opts.freestanding {
@@ -216,9 +326,15 @@ impl<'a> Gen<'a> {
             )
             .unwrap();
         } else {
+            let ginit = if self.a.globals.is_empty() {
+                String::new()
+            } else {
+                "    __fang_globals_init();\n".to_string()
+            };
             writeln!(
                 self.out,
-                "int main(int argc, char** argv) {{\n    fang_os_init(argc, argv);\n    fang_init_strings();\n    {}();\n    return 0;\n}}",
+                "int main(int argc, char** argv) {{\n    fang_os_init(argc, argv);\n    fang_init_strings();\n{}    {}();\n    return 0;\n}}",
+                ginit,
                 entry_main
             )
             .unwrap();
@@ -873,6 +989,28 @@ impl<'a> FnGen<'a> {
                     LValue::Ident(n) => {
                         // An undeclared name in codegen means sema
                         // auto-declared it: create the frame slot now.
+                        // Globals keep their C-level slot instead.
+                        let gm = format!("g_{}_{}", self.module, n);
+                        if g.a.globals.contains_key(&gm) {
+                            let vt = self.a.ty[&(self.module.clone(), value.span.start)].clone();
+                            let field = gm.clone();
+                            if g.is_rc(&vt) || matches!(vt, Ty::Struct(_)) {
+                                let t = format!("__asg{}", self.temp());
+                                self.w(&format!("{} {} = {};", g.ctype(&vt), t, code));
+                                let d = g.decref_stmt(&field, &vt);
+                                if !d.is_empty() {
+                                    self.w(&d);
+                                }
+                                self.w(&format!("{} = {};", field, t));
+                                if g.is_rc(&vt) {
+                                    self.w(&format!("fang_incref((void*)({}));", field));
+                                }
+                            } else {
+                                self.w(&format!("{} = {};", field, code));
+                            }
+                            self.flush_temps(g);
+                            return;
+                        }
                         if self.lookup(n).is_none() {
                             let vt = self.a.ty[&(self.module.clone(), value.span.start)].clone();
                             self.declare(n, vt, g);
@@ -1329,8 +1467,14 @@ impl<'a> FnGen<'a> {
     fn lvalue_code(&mut self, lv: &LValue, g: &Gen) -> String {
         match lv {
             LValue::Ident(n) => {
-                let v = self.lookup(n).map(|x| x.field.clone()).unwrap_or_default();
-                format!("f.{}", v)
+                if let Some(v) = self.lookup(n) {
+                    return format!("f.{}", v.field);
+                }
+                let gm = format!("g_{}_{}", self.module, n);
+                if g.a.globals.contains_key(&gm) {
+                    return gm;
+                }
+                format!("f.{}", String::new())
             }
             LValue::Index(recv, idx) => {
                 let base = self.lvalue_code(recv, g);
@@ -1357,7 +1501,13 @@ impl<'a> FnGen<'a> {
 
     fn lvalue_recv_ty(&mut self, lv: &LValue, g: &Gen) -> Ty {
         match lv {
-            LValue::Ident(n) => self.lookup(n).map(|v| v.ty.clone()).unwrap_or(Ty::Err),
+            LValue::Ident(n) => {
+                if let Some(v) = self.lookup(n) {
+                    return v.ty.clone();
+                }
+                let gm = format!("g_{}_{}", self.module, n);
+                g.a.globals.get(&gm).cloned().unwrap_or(Ty::Err)
+            }
             LValue::Index(recv, _) => {
                 let rt = self.lvalue_recv_ty(recv, g);
                 match rt {
@@ -1530,6 +1680,11 @@ impl<'a> FnGen<'a> {
                 if let Some(v) = self.lookup(name) {
                     return (format!("f.{}", v.field), v.ty.clone(), false);
                 }
+                // module-level global
+                let gm = format!("g_{}_{}", self.module, name);
+                if let Some(gt) = g.a.globals.get(&gm).cloned() {
+                    return (gm, gt, false);
+                }
                 // Named function used as a value: wrap in a closure.
                 let ty_here = self.a.ty[&(self.module.clone(), e.span.start)].clone();
                 if let Ty::Func(key) = &ty_here {
@@ -1582,6 +1737,10 @@ impl<'a> FnGen<'a> {
             ExprKind::Field(recv, name) => {
                 // module constant
                 if let ExprKind::Ident(base) = &recv.kind {
+                    let gm2 = format!("g_{}_{}", base, name);
+                    if let Some(t) = g.a.globals.get(&gm2).cloned() {
+                        return (gm2, t, false);
+                    }
                     let cm = format!("c_{}_{}", base, name);
                     if self.lookup(base).is_none() {
                         if let Some(cv) = g.a.consts.get(&cm) {
@@ -2136,6 +2295,11 @@ impl<'a> FnGen<'a> {
             Mul => format!("(({}) * ({}))", lc2, rc2),
             Div => format!("(({}) / ({}))", lc2, rc2),
             Mod => format!("(({}) % ({}))", lc2, rc2),
+            BitAnd => format!("(({}) & ({}))", lc2, rc2),
+            BitOr => format!("(({}) | ({}))", lc2, rc2),
+            BitXor => format!("(({}) ^ ({}))", lc2, rc2),
+            Shl => format!("(({}) << ({}))", lc2, rc2),
+            Shr => format!("(({}) >> ({}))", lc2, rc2),
             Pow => {
                 if promoted == Ty::Float {
                     format!("pow({}, {})", lc2, rc2)

@@ -1,0 +1,24 @@
+# Module-level let creates mutable globals, visible in every function.
+let counter: list[int] = []
+let mode = "idle"
+let total = 0
+
+fn bump(n: int):
+  for i in 0..n:
+    counter.push(len(counter) + 1)
+  mode = "busy"
+
+fn add(x: int):
+  total = total + x
+
+add(40)
+add(2)
+bump(3)
+print(total, mode, counter)
+
+fn swap_mode():
+  if mode == "busy":
+    mode = "done"
+
+swap_mode()
+print(mode)

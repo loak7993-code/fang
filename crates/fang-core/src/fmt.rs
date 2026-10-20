@@ -21,12 +21,16 @@ pub fn format_module(m: &Module) -> String {
                 }
                 prev_was_import = true;
             }
-            Item::Const { name, value, exported, .. } => {
+            Item::Const { name, ann, value, exported, .. } => {
                 if !first {
                     out.push('\n');
                 }
                 let kw = if *exported { "export let" } else { "let" };
-                out.push_str(&format!("{} {} = ", kw, name));
+                out.push_str(&format!("{} {}", kw, name));
+                if let Some(a) = ann {
+                    out.push_str(&format!(": {}", a));
+                }
+                out.push_str(" = ");
                 write_expr(&mut out, value, 0);
                 out.push('\n');
                 prev_was_import = false;
@@ -247,9 +251,13 @@ fn prec(e: &ExprKind) -> u8 {
         ExprKind::Not(_) => 3,
         ExprKind::Compare(..) => 4,
         ExprKind::Binary(op, _, _) => match op {
+            BinOp::BitOr => 2,
+            BinOp::BitXor => 3,
+            BinOp::BitAnd => 4,
             BinOp::Add | BinOp::Sub => 5,
             BinOp::Mul | BinOp::Div | BinOp::Mod => 6,
             BinOp::Pow => 8,
+            BinOp::Shl | BinOp::Shr => 5,
         },
         ExprKind::Unary(..) => 7,
         ExprKind::Call(..)
@@ -455,6 +463,11 @@ fn op_str(op: &BinOp) -> &'static str {
         BinOp::Div => "/",
         BinOp::Mod => "%",
         BinOp::Pow => "**",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
     }
 }
 

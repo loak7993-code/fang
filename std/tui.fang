@@ -1,0 +1,240 @@
+# Terminal UI in pure Fang. ANSI escape codes, a diffing screen
+
+# buffer, and key input. No dependencies beyond the terminal itself.
+
+extern fn fang_term_raw() from "fang_rt.h"
+
+extern fn fang_term_restore() from "fang_rt.h"
+
+extern fn fang_read_key_ms(timeout: int) -> int from "fang_rt.h"
+
+extern fn fang_print_raw(s: str) from "fang_rt.h"
+
+import os
+import str
+# --- key codes returned by read_key ---
+
+export let KEY_NONE = -1
+
+export let KEY_ESCAPE = 27
+
+export let KEY_UP = 1000
+
+export let KEY_DOWN = 1001
+
+export let KEY_LEFT = 1002
+
+export let KEY_RIGHT = 1003
+
+export let KEY_HOME = 1004
+
+export let KEY_END = 1005
+
+export let KEY_DELETE = 1006
+
+export let KEY_PAGE_UP = 1007
+
+export let KEY_PAGE_DOWN = 1008
+
+# --- colors ---
+
+export let BLACK = 0
+
+export let RED = 1
+
+export let GREEN = 2
+
+export let YELLOW = 3
+
+export let BLUE = 4
+
+export let MAGENTA = 5
+
+export let CYAN = 6
+
+export let WHITE = 7
+
+export let DEFAULT = 9
+
+# Write a string with no newline; escape sequences go through here.
+
+export fn write(s: str):
+  fang_print_raw(s)
+  # Colors: foreground, background, bold, reset.
+
+export fn fg(c: int) -> str:
+  if c == DEFAULT:
+    return "[39m"
+  "[3" + str(c) + "m"
+
+export fn bg(c: int) -> str:
+  if c == DEFAULT:
+    return "[49m"
+  "[4" + str(c) + "m"
+
+export fn bold() -> str:
+  "[1m"
+
+export fn reset() -> str:
+  "[0m"
+
+export fn style(f: int, b: int, is_bold: bool) -> str:
+  out = fg(f) + bg(b)
+  if is_bold:
+    out = out + bold()
+  out
+  # --- whole-terminal state ---
+
+export fn clear():
+  write("[2J")
+
+export fn clear_line():
+  write("[2K")
+
+export fn goto(x: int, y: int):
+  write("[" + str(y + 1) + ";" + str(x + 1) + "H")
+
+export fn hide_cursor():
+  write("[?25l")
+
+export fn show_cursor():
+  write("[?25h")
+
+export fn bell():
+  write("")
+  # Raw mode: no echo, no line buffering, keys arrive instantly.
+
+export fn init():
+  fang_term_raw()
+  hide_cursor()
+  clear()
+  goto(0, 0)
+  # Restore the terminal exactly as it was.
+
+export fn done():
+  show_cursor()
+  reset()
+  write("\n")
+  fang_term_restore()
+  # --- screen buffer ---
+
+struct Screen:
+  w: int
+  h: int
+  cells: list[str]
+
+export fn screen(w: int, h: int) -> Screen:
+  cells: list[str] = []
+  for i in 0..w * h:
+    cells.push(" ")
+  Screen(w, h, cells)
+
+export fn scr_width(s: Screen) -> int:
+  s.w
+
+export fn scr_height(s: Screen) -> int:
+  s.h
+
+export fn scr_set(s: Screen, x: int, y: int, ch: str):
+  if x < 0 or x >= s.w or y < 0 or y >= s.h:
+    return
+  s.cells[y * s.w + x] = ch
+
+export fn scr_set_str(s: Screen, x: int, y: int, text: str):
+  for i in 0..len(text):
+    scr_set(s, x + i, y, text.slice(i, i + 1))
+
+export fn scr_fill(s: Screen, x: int, y: int, w: int, h: int, ch: str):
+  for jy in 0..h:
+    for ix in 0..w:
+      scr_set(s, x + ix, y + jy, ch)
+      # A single-character box.
+
+export fn scr_box(s: Screen, x: int, y: int, w: int, h: int):
+  if w < 2 or h < 2:
+    return
+  scr_set(s, x, y, "+")
+  scr_set(s, x + w - 1, y, "+")
+  scr_set(s, x, y + h - 1, "+")
+  scr_set(s, x + w - 1, y + h - 1, "+")
+  for ix in 1..w - 1:
+    scr_set(s, x + ix, y, "-")
+    scr_set(s, x + ix, y + h - 1, "-")
+  for iy in 1..h - 1:
+    scr_set(s, x, y + iy, "|")
+    scr_set(s, x + w - 1, y + iy, "|")
+    # Paint the whole buffer. Uses goto so the buffer can be sparse.
+
+export fn scr_draw(s: Screen):
+  goto(0, 0)
+  out = ""
+  for y in 0..s.h:
+    for x in 0..s.w:
+      out = out + s.cells[y * s.w + x]
+    if y < s.h - 1:
+      out = out + "\r\n"
+  write(out)
+  goto(0, s.h)
+  # --- keys ---
+  # Read one key: plain bytes pass through, escape sequences become
+  # the KEY_ constants. Waits up to `timeout_ms`; KEY_NONE if silent.
+
+export fn read_key(timeout_ms: int) -> int:
+  c = fang_read_key_ms(timeout_ms)
+  if c < 0:
+    return KEY_NONE
+  if c != 27:
+    return c
+    # Escape: peek with a short timeout to tell a lone ESC apart
+    # from an arrow key sequence.
+  c2 = fang_read_key_ms(20)
+  if c2 < 0:
+    return KEY_ESCAPE
+  if c2 != 91:
+    return KEY_ESCAPE
+  c3 = fang_read_key_ms(20)
+  if c3 < 0:
+    return KEY_ESCAPE
+  if c3 == 65:
+    return KEY_UP
+  if c3 == 66:
+    return KEY_DOWN
+  if c3 == 67:
+    return KEY_RIGHT
+  if c3 == 68:
+    return KEY_LEFT
+  if c3 == 70:
+    return KEY_END
+  if c3 == 72:
+    return KEY_HOME
+  if c3 == 51:
+    fang_read_key_ms(20)
+    return KEY_DELETE
+  if c3 == 53:
+    fang_read_key_ms(20)
+    return KEY_PAGE_UP
+  if c3 == 54:
+    fang_read_key_ms(20)
+    return KEY_PAGE_DOWN
+  return KEY_ESCAPE
+  # Wait for exactly one keypress, no timeout.
+
+export fn wait_key() -> int:
+  while true:
+    k = read_key(50)
+    if k != KEY_NONE:
+      return k
+  return KEY_NONE
+  # Terminal size from the environment, with sane defaults.
+
+export fn tui_width() -> int:
+  v = os.env("COLUMNS")
+  if v == "" or v == "0":
+    return 80
+  str.to_int(v)
+
+export fn tui_height() -> int:
+  v = os.env("LINES")
+  if v == "" or v == "0":
+    return 24
+  str.to_int(v)

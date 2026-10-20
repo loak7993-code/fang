@@ -59,9 +59,11 @@ int64_t fang_str_to_i64(fang_str* s);
 double fang_str_to_f64(fang_str* s);
 uint64_t fang_str_hash(fang_str* s);
 fang_str* fang_str_char_at(fang_str* s, int64_t i);
+int64_t fang_str_byte_at(fang_str* s, int64_t i);
 
 /* Print: values then separators, newline at end. */
 void fang_print_str(fang_str* s);
+void fang_print_raw(fang_str* s);
 /* Debug rendering used when a collection is printed: [1, 2, 3]. */
 void fang_print_debug(void* v, int kind);
 /* kind: 0 = list[str], 1 = list[int], 2 = list[float], 3 = list[ptr],
@@ -145,6 +147,11 @@ void* fang_tcp_listen(int64_t port);
 void* fang_tcp_accept(void* srv);
 /* Read one HTTP request: headers plus Content-Length body. */
 fang_str* fang_tcp_recv_http(void* sock);
+/* Terminal raw mode (no echo, no line buffering, no signals). */
+void fang_term_raw(void);
+void fang_term_restore(void);
+/* Read one key byte with a millisecond timeout; -1 when none. */
+int64_t fang_read_key_ms(int64_t timeout_ms);
 int64_t fang_tcp_send(void* sock, fang_str* data);
 fang_str* fang_tcp_recv_all(void* sock);
 void fang_tcp_close(void* sock);
@@ -194,7 +201,7 @@ void fang_sort_str(fang_str** base, int64_t n);
 /* ------------------------------------------------------------------ */
 
 #define FANG_LIST_DEFINE(SFX, T, EQ, INC, DEC)                                 \
-  typedef struct { int64_t rc, len, cap; T* elems; } fang_list_##SFX;          \
+  typedef struct fang_list_##SFX { int64_t rc, len, cap; T* elems; } fang_list_##SFX; \
   static fang_list_##SFX* fang_list_##SFX##_new(void) {                         \
     fang_list_##SFX* l = (fang_list_##SFX*)malloc(sizeof(*l));                  \
     l->rc = 1; l->len = 0; l->cap = 0; l->elems = NULL; return l;             \
@@ -283,15 +290,15 @@ void fang_sort_str(fang_str** base, int64_t n);
 
 /* Tuples: plain value pairs. */
 #define FANG_TUPLE_DEFINE(SFXA, SFXB, A, B)                                    \
-  typedef struct { A a; B b; } fang_tuple_##SFXA##_##SFXB;
+  typedef struct fang_tuple_##SFXA##_##SFXB { A a; B b; } fang_tuple_##SFXA##_##SFXB;
 
 /* Dicts: open addressing, insertion ordered via probe sequence scan.
    KHASH: hash expr, KEQ: equality expr. Requires the K and V list
    stamps and the tuple stamp to already exist in this translation
    unit; the codegen guarantees that ordering. */
 #define FANG_DICT_DEFINE(KS, VS, K, V, KHASH, KEQ, DEC_K, DEC_V, KINC, VINC)   \
-  typedef struct { int64_t order; K key; V val; } fang_dslot_##KS##_##VS; \
-  typedef struct { int64_t rc, len, cap; fang_dslot_##KS##_##VS* slots; } fang_dict_##KS##_##VS; \
+  typedef struct fang_dslot_##KS##_##VS { int64_t order; K key; V val; } fang_dslot_##KS##_##VS; \
+  typedef struct fang_dict_##KS##_##VS { int64_t rc, len, cap; fang_dslot_##KS##_##VS* slots; } fang_dict_##KS##_##VS; \
   static fang_dict_##KS##_##VS* fang_dict_##KS##_##VS##_new(void) {             \
     fang_dict_##KS##_##VS* d = (fang_dict_##KS##_##VS*)malloc(sizeof(*d));     \
     d->rc = 1; d->len = 0; d->cap = 8;                                        \

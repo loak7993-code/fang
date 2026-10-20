@@ -12,6 +12,8 @@
 #include <netdb.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <termios.h>
+#include <poll.h>
 
 static void fang_sb_str_raw(fang_sb* sb, const char* data, int64_t len);
 
@@ -94,6 +96,12 @@ fang_str* fang_str_slice(fang_str* s, int64_t start, int64_t end) {
     if (end > s->len) end = s->len;
     if (start >= end) return fang_str_new("", 0);
     return fang_str_new(s->bytes + start, end - start);
+}
+
+int64_t fang_str_byte_at(fang_str* s, int64_t i) {
+    if (i < 0) i += s->len;
+    if (i < 0 || i >= s->len) fang_panic("string index out of bounds", __FILE__, __LINE__);
+    return (int64_t)(unsigned char)s->bytes[i];
 }
 
 fang_str* fang_str_char_at(fang_str* s, int64_t i) {
@@ -217,6 +225,11 @@ uint64_t fang_str_hash(fang_str* s) {
 /* ------------------------------------------------------------------ */
 /* Print                                                               */
 /* ------------------------------------------------------------------ */
+
+void fang_print_raw(fang_str* s) {
+    fwrite(s->bytes, 1, (size_t)s->len, stdout);
+    fflush(stdout);
+}
 
 void fang_print_str(fang_str* s) {
     fwrite(s->bytes, 1, (size_t)s->len, stdout);
@@ -677,6 +690,45 @@ fang_str* fang_tcp_recv_http(void* sock) {
 
 void fang_tcp_close(void* sock) {
     close((int)(intptr_t)sock);
+}
+
+/* ------------------------------------------------------------------ */
+/* Terminal: raw mode and key reads                                    */
+/* ------------------------------------------------------------------ */
+
+static struct termios fang_saved_termios;
+static int fang_term_raw_on = 0;
+
+void fang_term_raw(void) {
+    if (fang_term_raw_on) return;
+    if (tcgetattr(0, &fang_saved_termios) != 0) return;
+    struct termios t = fang_saved_termios;
+    t.c_lflag &= ~(ICANON | ECHO | ISIG);
+    t.c_iflag &= ~(IXON | ICRNL);
+    t.c_cc[VMIN] = 0;
+    t.c_cc[VTIME] = 0;
+    if (tcsetattr(0, TCSAFLUSH, &t) != 0) return;
+    fang_term_raw_on = 1;
+}
+
+void fang_term_restore(void) {
+    if (!fang_term_raw_on) return;
+    tcsetattr(0, TCSAFLUSH, &fang_saved_termios);
+    fang_term_raw_on = 0;
+}
+
+/* Read one byte from stdin with a millisecond timeout.
+   Returns the byte (0-255), or -1 if no key arrived in time. */
+int64_t fang_read_key_ms(int64_t timeout_ms) {
+    struct pollfd p;
+    p.fd = 0;
+    p.events = POLLIN;
+    int r = poll(&p, 1, (int)timeout_ms);
+    if (r <= 0) return -1;
+    unsigned char c;
+    ssize_t n = read(0, &c, 1);
+    if (n != 1) return -1;
+    return (int64_t)c;
 }
 
 /* ------------------------------------------------------------------ */

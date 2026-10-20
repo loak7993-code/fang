@@ -68,6 +68,7 @@ static STD_MODULES: &[(&str, &str)] = &[
     ("net", include_str!("../../../std/net.fang")),
     ("py", include_str!("../../../std/py.fang")),
     ("server", include_str!("../../../std/server.fang")),
+    ("tui", include_str!("../../../std/tui.fang")),
 ];
 
 use std::collections::HashMap;
@@ -114,6 +115,19 @@ struct BuildFlags {
 }
 
 fn parse_flags(args: &[String]) -> Result<(String, BuildFlags), String> {
+    parse_flags_with_prog_args(args).map(|(f, fl, _)| (f, fl))
+}
+
+/// Returns (file, flags, program_args): everything after `--` is
+/// passed to the compiled program as argv.
+fn parse_flags_with_prog_args(args: &[String]) -> Result<(String, BuildFlags, Vec<String>), String> {
+    // Split at the first "--": the left side is ours, the right side
+    // belongs to the program.
+    let split = args.iter().position(|a| a == "--");
+    let (ours, prog_args): (&[String], Vec<String>) = match split {
+        Some(i) => (&args[..i], args[i + 1..].to_vec()),
+        None => (args, Vec::new()),
+    };
     let mut file: Option<String> = None;
     let mut flags = BuildFlags {
         release: false,
@@ -124,8 +138,8 @@ fn parse_flags(args: &[String]) -> Result<(String, BuildFlags), String> {
         output: None,
     };
     let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
+    while i < ours.len() {
+        match ours[i].as_str() {
             "--release" => flags.release = true,
             "--keep-c" => flags.keep_c = true,
             "--freestanding" => flags.freestanding = true,
@@ -158,7 +172,7 @@ fn parse_flags(args: &[String]) -> Result<(String, BuildFlags), String> {
     if !file.ends_with(".fang") {
         return Err(format!("'{}' is not a .fang file", file));
     }
-    Ok((file, flags))
+    Ok((file, flags, prog_args))
 }
 
 /// Std units parsed once per program build. The Python bridge module
@@ -435,14 +449,14 @@ fn compile_program(
 }
 
 fn cmd_run(args: &[String]) -> ExitCode {
-    let (file, flags) = match parse_flags(args) {
+    let (file, flags, prog_args) = match parse_flags_with_prog_args(args) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("fang run: {}", e);
             return ExitCode::from(1);
         }
     };
-    match run_program(&file, &flags, "run") {
+    match run_program(&file, &flags, "run", &prog_args) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("fang: {}", e);
@@ -471,12 +485,13 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 }
 
-fn run_program(file: &str, flags: &BuildFlags, tag: &str) -> Result<ExitCode, String> {
+fn run_program(file: &str, flags: &BuildFlags, tag: &str, prog_args: &[String]) -> Result<ExitCode, String> {
     let units = load_program(file)?;
     let entry = units.last().unwrap().name.clone();
     let a = analyze_program(&units, &entry)?;
     let compiled = compile_program(&units, &a, &entry, flags, tag)?;
     let status = Command::new(&compiled.binary)
+        .args(prog_args)
         .status()
         .map_err(|e| format!("cannot run the compiled program: {}", e))?;
     let code = status.code().unwrap_or(1);

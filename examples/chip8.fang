@@ -1,0 +1,332 @@
+# CHIP-8 emulator in pure Fang. 64x32 monochrome display, 16
+
+# registers, 4KB RAM, the classic 1977 instruction set.
+
+# 
+
+# fang run chip8.fang rom.ch8            interactive (arrows + qzx)
+
+# fang run chip8.fang rom.ch8 --frames N  headless: run N frames,
+
+# print the final screen
+
+# 
+
+# Keys: 1234 qwer asdf zxcv (the original HEX keypad).
+
+import tui
+
+let FONT: list[int] = [240, 144, 144, 144, 240, 32, 96, 32, 32, 112, 240, 16, 240, 128, 240, 240, 16, 240, 16, 240, 144, 144, 240, 16, 16, 240, 128, 240, 16, 240, 240, 128, 240, 144, 240, 240, 16, 32, 64, 64, 240, 144, 240, 144, 240, 240, 144, 240, 16, 240, 240, 144, 240, 144, 144, 224, 144, 224, 144, 224, 240, 128, 128, 128, 240, 224, 144, 144, 144, 224, 240, 128, 240, 128, 240, 240, 128, 240, 128, 128]
+
+# --- state ---
+
+let ram: list[int] = []
+
+let v: list[int] = []
+
+let i_reg = 0
+
+let pc = 512
+
+let stack: list[int] = []
+
+let delay_timer = 0
+
+let sound_timer = 0
+
+let display: list[int] = []
+
+let keys: list[int] = []
+
+let waiting_key_reg = -1
+
+# --- the original CHIP-8 font, sprites for 0-F ---
+
+fn hex_byte(b: int) -> str:
+  let digits = "0123456789ABCDEF"
+  digits.slice(b >> 4 & 15, b >> 4 & 15 + 1) + digits.slice(b & 15, b & 15 + 1)
+  # --- load ---
+
+fn load_font():
+  for i in 0..len(FONT):
+    ram[80 + i] = FONT[i]
+
+fn load_rom(path: str):
+  data = fs.read_file(path)
+  if len(data) > 3584:
+    print("rom too large")
+    os.exit(1)
+  for i in 0..len(data):
+    ram[512 + i] = str.byte_at(data, i)
+    # --- pixels ---
+
+fn px(x: int, y: int) -> int:
+  display[(y & 31) * 64 + (x & 63)]
+
+fn flip_px(x: int, y: int) -> int:
+  xx = x & 63
+  yy = y & 31
+  idx = yy * 64 + xx
+  display[idx] = display[idx] ^ 1
+  return 1 - display[idx]
+  # --- keypad mapping ---
+
+fn map_key(k: int) -> int:
+  if k == 49:
+    return 1
+  if k == 50:
+    return 2
+  if k == 51:
+    return 3
+  if k == 52:
+    return 12
+  if k == 113:
+    return 4
+  if k == 119:
+    return 5
+  if k == 101:
+    return 6
+  if k == 114:
+    return 13
+  if k == 97:
+    return 7
+  if k == 115:
+    return 8
+  if k == 100:
+    return 9
+  if k == 102:
+    return 14
+  if k == 122:
+    return 10
+  if k == 120:
+    return 0
+  if k == 99:
+    return 11
+  if k == 118:
+    return 15
+  return -1
+  # --- fetch, decode, execute one instruction ---
+
+fn step():
+  op = ram[pc] << 8 | ram[pc + 1]
+  pc = pc + 2
+  nnn = op & 4095
+  x = op >> 8 & 15
+  y = op >> 4 & 15
+  kk = op & 255
+  n = op & 15
+  top = op >> 12
+  if top == 0:
+    if op == 224:
+      # clear screen
+      for i in 0..64 * 32:
+        display[i] = 0
+    elif op == 238:
+      # return from subroutine
+      if len(stack) > 0:
+        pc = stack.pop()
+  elif top == 1:
+    # jump
+    pc = nnn
+  elif top == 2:
+    # call subroutine
+    stack.push(pc)
+    pc = nnn
+  elif top == 3:
+    if v[x] == kk:
+      pc = pc + 2
+  elif top == 4:
+    if v[x] != kk:
+      pc = pc + 2
+  elif top == 5:
+    if v[x] == v[y]:
+      pc = pc + 2
+  elif top == 6:
+    v[x] = kk
+  elif top == 7:
+    v[x] = v[x] + kk & 255
+  elif top == 8:
+    if n == 0:
+      v[x] = v[y]
+    elif n == 1:
+      v[x] = v[x] | v[y]
+    elif n == 2:
+      v[x] = v[x] & v[y]
+    elif n == 3:
+      v[x] = v[x] ^ v[y]
+    elif n == 4:
+      t = v[x] + v[y]
+      v[15] = 0
+      if t > 255:
+        v[15] = 1
+      v[x] = t & 255
+    elif n == 5:
+      v[15] = 0
+      if v[x] >= v[y]:
+        v[15] = 1
+      v[x] = v[x] - v[y] & 255
+    elif n == 6:
+      v[15] = v[x] & 1
+      v[x] = v[x] >> 1
+    elif n == 7:
+      v[15] = 0
+      if v[y] >= v[x]:
+        v[15] = 1
+      v[x] = v[y] - v[x] & 255
+    elif n == 14:
+      v[15] = 0
+      if (v[x] & 128) != 0:
+        v[15] = 1
+      v[x] = v[x] << 1 & 255
+  elif top == 9:
+    if v[x] != v[y]:
+      pc = pc + 2
+  elif top == 10:
+    i_reg = nnn
+  elif top == 11:
+    pc = nnn + v[0]
+  elif top == 12:
+    v[x] = math.rand_int(256) & kk
+  elif top == 13:
+    # draw: the sprite XOR
+    vx = v[x]
+    vy = v[y]
+    v[15] = 0
+    for row in 0..n:
+      sprite = ram[i_reg + row]
+      for col in 0..8:
+        if (sprite & 128 >> col) != 0:
+          if flip_px(vx + col, vy + row) == 1:
+            v[15] = 1
+  elif top == 14:
+    if kk == 158:
+      if keys[v[x]] == 1:
+        pc = pc + 2
+    elif kk == 161:
+      if keys[v[x]] == 0:
+        pc = pc + 2
+  elif top == 15:
+    if kk == 7:
+      v[x] = delay_timer
+    elif kk == 10:
+      # wait for a key: halt until one is pressed
+      any = 0
+      for i in 0..16:
+        if keys[i] == 1:
+          v[x] = i
+          any = 1
+      if any == 0:
+        waiting_key_reg = x
+        pc = pc - 2
+    elif kk == 21:
+      delay_timer = v[x]
+    elif kk == 24:
+      sound_timer = v[x]
+    elif kk == 30:
+      i_reg = i_reg + v[x]
+    elif kk == 41:
+      i_reg = 80 + v[x] * 5
+    elif kk == 51:
+      ram[i_reg] = v[x] / 100
+      ram[i_reg + 1] = v[x] / 10 % 10
+      ram[i_reg + 2] = v[x] % 10
+    elif kk == 85:
+      for i in 0..x + 1:
+        ram[i_reg + i] = v[i]
+    elif kk == 101:
+      for i in 0..x + 1:
+        v[i] = ram[i_reg + i]
+        # --- render ---
+
+fn render_headless():
+  out = ""
+  for y in 0..32:
+    for x in 0..64:
+      if display[y * 64 + x] == 1:
+        out = out + "#"
+      else:
+        out = out + "."
+    out = out + "\n"
+  print(out)
+
+fn render_screen(s: Screen):
+  for y in 0..32:
+    for x in 0..64:
+      if display[y * 64 + x] == 1:
+        tui.scr_set(s, x, y + 1, "#")
+      else:
+        tui.scr_set(s, x, y + 1, " ")
+  tui.scr_set_str(s, 0, 0, "fang chip8 - q to quit")
+
+fn pump_keys():
+  while true:
+    k = tui.read_key(0)
+    if k == tui.KEY_NONE:
+      return
+    if k == 113:
+      tui.done()
+      os.exit(0)
+    mk = map_key(k)
+    if mk >= 0:
+      keys[mk] = 1
+      if waiting_key_reg >= 0:
+        v[waiting_key_reg] = mk
+        let waiting_key_reg = -1
+        pc = pc + 2
+
+fn release_key(k: int):
+  mk = map_key(k)
+  if mk >= 0:
+    keys[mk] = 0
+    # --- main ---
+
+import fs
+import os
+import str
+import math
+
+fn main():
+  for i in 0..4096:
+    ram.push(0)
+  for i in 0..16:
+    v.push(0)
+  for i in 0..64 * 32:
+    display.push(0)
+  for i in 0..16:
+    keys.push(0)
+  args = os.args()
+  if len(args) < 2:
+    print("usage: chip8 <rom.ch8> [--frames N]")
+    os.exit(1)
+  frames = -1
+  if len(args) >= 4:
+    if args[2] == "--frames":
+      frames = str.to_int(args[3])
+  load_font()
+  load_rom(args[1])
+  if frames >= 0:
+    # headless: deterministic run, print the final screen
+    for f in 0..frames:
+      step()
+      if delay_timer > 0:
+        delay_timer = delay_timer - 1
+      if sound_timer > 0:
+        sound_timer = sound_timer - 1
+    render_headless()
+  else:
+    # interactive
+    tui.init()
+    s = tui.screen(64, 33)
+    frame = 0
+    while true:
+      pump_keys()
+      step()
+      if frame % 6 == 0:
+        if delay_timer > 0:
+          delay_timer = delay_timer - 1
+        if sound_timer > 0:
+          sound_timer = sound_timer - 1
+      render_screen(s)
+      tui.scr_draw(s)
+      frame = frame + 1
+    tui.done()

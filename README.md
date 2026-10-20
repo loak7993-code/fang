@@ -173,6 +173,50 @@ routes, and STDLIB.md for the `server` module reference.
 Same language, same binary, same performance story: kernels at boot,
 servers on the wire.
 
+## TUI and emulators
+
+Terminal apps are pure Fang: the `tui` module is ANSI escape codes, a
+screen buffer, and raw-mode key input, with zero dependencies. See
+`examples/chip8.fang`, a complete CHIP-8 emulator (all 35 opcodes, the
+original HEX keypad, `--frames N` headless testing):
+
+```sh
+fang run examples/chip8.fang rom.ch8            # play it
+fang run examples/chip8.fang rom.ch8 --frames N # headless run
+```
+
+## Every operating system
+
+Fang emits C and compiles it with the platform C compiler, so it goes
+wherever C goes: Linux, Windows, macOS, the BSDs, Android (via the
+NDK's clang), and iOS. Cross-compile by passing a target triple:
+
+```sh
+fang build app.fang --target aarch64-linux-gnu     # ARM Linux
+fang build app.fang --target x86_64-w64-mingw32    # Windows .exe
+fang build app.fang --freestanding --target x86_64-elf   # kernels
+```
+
+The browser runs the same C through Emscripten's toolchain. GUI apps
+link the platform's native libraries with `extern fn`, the same
+mechanism the stdlib uses for every C function it touches.
+
+## Module-level state
+
+Top-level `let` creates a mutable global, exactly like Python: every
+function in the file sees it and can change it.
+
+```fang
+let scoreboard: list[int] = []
+
+fn record(points: int):
+  scoreboard.push(points)
+
+record(10)
+record(20)
+print(scoreboard)   # [10, 20]
+```
+
 ## Packages
 
 A package is a git repository with `mypkg.fang` at its root. There is no

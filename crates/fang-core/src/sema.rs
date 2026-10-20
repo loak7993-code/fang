@@ -202,6 +202,8 @@ pub struct Analysis {
     pub in_progress: HashSet<String>,
     /// Module name -> imported module names (resolved).
     pub imports: HashMap<String, Vec<String>>,
+    /// Module-level mutable values: "g_<module>_<name>" -> type.
+    pub globals: HashMap<String, Ty>,
     pub modules: Vec<String>,
 }
 
@@ -252,6 +254,7 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
         errors: Vec::new(),
         in_progress: HashSet::new(),
         imports: HashMap::new(),
+        globals: HashMap::new(),
         modules: Vec::new(),
     };
 
@@ -491,8 +494,8 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
             if let Item::Fn(f) = item {
                 infer_fn(f, mname, &mut a);
             }
-            if let Item::Const { name, value, span, .. } = item {
-                infer_const(name, value, *span, mname, &mut a);
+            if let Item::Const { name, ann, value, span, .. } = item {
+                infer_const(name, ann.as_ref(), value, *span, mname, &mut a);
             }
         }
     }
@@ -811,63 +814,44 @@ fn conv_type(t: &Type, module: &str, a: &Analysis) -> Ty {
     }
 }
 
-fn infer_const(name: &str, value: &Expr, span: Span, module: &str, a: &mut Analysis) {
+fn infer_const(
+    name: &str,
+    ann: Option<&Type>,
+    value: &Expr,
+    span: Span,
+    module: &str,
+    a: &mut Analysis,
+) {
+    // Pre-seed the annotation so empty literals type correctly.
+    if let Some(ty) = ann {
+        let ct = conv_type(ty, module, a);
+        if ct != Ty::Err {
+            a.ty.insert((module.to_string(), value.span.start), ct);
+        }
+    }
     let t = infer_expr(value, module, a, &mut Ctx {
         scopes: vec![HashMap::new()],
         ret: Ty::Void,
         loop_depth: 0,
-    });
-    let _ = t;
-    match const_eval(value) {
-        Some(v) => {
-            a.consts.insert(format!("c_{}_{}", module, name), v);
-        }
-        None => {
-            a.err(
-                format!("top-level let '{}' must be a constant expression (literals and literal arithmetic)", name),
-                span,
-                module,
-            );
-        }
-    }
-}
-
-fn const_eval(e: &Expr) -> Option<ConstVal> {
-    Some(match &e.kind {
-        ExprKind::Int(v) => ConstVal::Int(*v),
-        ExprKind::Float(v) => ConstVal::Float(*v),
-        ExprKind::Bool(v) => ConstVal::Bool(*v),
-        ExprKind::Str(s) => ConstVal::Str(s.clone()),
-        ExprKind::Unary(BinOp::Sub, inner) => match const_eval(inner)? {
-            ConstVal::Int(v) => ConstVal::Int(-v),
-            ConstVal::Float(v) => ConstVal::Float(-v),
-            _ => return None,
-        },
-        ExprKind::Binary(op, l, r) => {
-            let lv = const_eval(l)?;
-            let rv = const_eval(r)?;
-            match (lv, rv) {
-                (ConstVal::Int(x), ConstVal::Int(y)) => ConstVal::Int(match op {
-                    BinOp::Add => x.checked_add(y)?,
-                    BinOp::Sub => x.checked_sub(y)?,
-                    BinOp::Mul => x.checked_mul(y)?,
-                    BinOp::Div => x.checked_div(y)?,
-                    BinOp::Mod => x.checked_rem(y)?,
-                    BinOp::Pow => return None,
-                }),
-                (ConstVal::Float(x), ConstVal::Float(y)) => ConstVal::Float(match op {
-                    BinOp::Add => x + y,
-                    BinOp::Sub => x - y,
-                    BinOp::Mul => x * y,
-                    BinOp::Div => x / y,
-                    _ => return None,
-                }),
-                (ConstVal::Str(x), ConstVal::Str(y)) if *op == BinOp::Add => ConstVal::Str(x + &y),
-                _ => return None,
-            }
-        }
-        _ => return None,
     })
+    .clone();
+    // A module-level let is always a mutable global, like Python.
+    let ty = match ann {
+        Some(ty) => {
+            let ct = conv_type(ty, module, a);
+            if ct != Ty::Err && ct != t && t != Ty::Err {
+                a.err(
+                    format!("annotation says {} but the value is {}", ct.show(a), t.show(a)),
+                    span,
+                    module,
+                );
+            }
+            ct
+        }
+        None => t.clone(),
+    };
+    let ty = if matches!(ty, Ty::Err) { t } else { ty };
+    a.globals.insert(format!("g_{}_{}", module, name), ty);
 }
 
 fn infer_fn(f: &FnDecl, module: &str, a: &mut Analysis) {
@@ -1025,7 +1009,10 @@ fn infer_block_top(
             }
         }
     }
-    if info.seen.is_some() && !info.guaranteed {
+    // A void "seen" means the function only bare-returns: falling off
+    // the end is fine for it. The classic guard pattern
+    // (`if bad: return`, then more statements) must not error.
+    if info.seen.as_ref().is_some_and(|t| !matches!(t, Ty::Void)) && !info.guaranteed {
         a.errors.push(SemaError {
             msg: "not every path returns a value; add a return at the end or an else branch"
                 .to_string(),
@@ -1512,7 +1499,14 @@ fn split_tuple(t: &Ty, a: &Analysis) -> (Ty, Ty) {
 
 fn infer_lvalue_ty(lv: &LValue, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Ty {
     match lv {
-        LValue::Ident(n) => ctx.lookup(n).unwrap_or(Ty::Err),
+        LValue::Ident(n) => {
+            if let Some(t) = ctx.lookup(n) {
+                return t;
+            }
+            // module-level mutable global
+            let gm = format!("g_{}_{}", module, n);
+            a.globals.get(&gm).cloned().unwrap_or(Ty::Err)
+        }
         LValue::Index(recv, idx) => {
             let rt = infer_lvalue_ty(recv, module, a, ctx);
             let _ = infer_expr(idx, module, a, ctx);
@@ -1604,6 +1598,12 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
             if let Some(t) = ctx.lookup(name) {
                 return t;
             }
+            // module-level mutable global
+            let gm = format!("g_{}_{}", module, name);
+            if let Some(t) = a.globals.get(&gm).cloned() {
+                a.ty.insert((module.to_string(), e.span.start), t.clone());
+                return t;
+            }
             // function reference
             let fm = format!("f_{}_{}", module, name);
             if a.fns.contains_key(&fm) {
@@ -1611,7 +1611,9 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
             }
             let cm = format!("c_{}_{}", module, name);
             if let Some(v) = a.consts.get(&cm) {
-                return const_ty(v);
+                let t = const_ty(v);
+                a.ty.insert((module.to_string(), e.span.start), t.clone());
+                return t;
             }
             a.err(
                 format!("unknown name '{}'; {}", name, {
@@ -1670,13 +1672,19 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
         ExprKind::Call(callee, args) => infer_call(callee, args, e, module, a, ctx),
         ExprKind::Method(recv, name, args) => infer_method(recv, name, args, e, module, a, ctx),
         ExprKind::Field(recv, name) => {
-            // module-qualified constant: math.PI
+            // module-qualified constant or global: math.PI, tui.KEY_NONE
             if let ExprKind::Ident(base) = &recv.kind {
                 if !ctx.lookup(base).is_some() {
                     let cm = format!("c_{}_{}", base, name);
                     if a.consts.contains_key(&cm) {
                         let v = a.consts.get(&cm).unwrap().clone();
+                        a.ty.insert((module.to_string(), e.span.start), const_ty(&v));
                         return const_ty(&v);
+                    }
+                    let gm = format!("g_{}_{}", base, name);
+                    if let Some(t) = a.globals.get(&gm).cloned() {
+                        a.ty.insert((module.to_string(), e.span.start), t.clone());
+                        return t;
                     }
                 }
             }
@@ -2314,6 +2322,18 @@ fn struct_comparable(t: &Ty, a: &Analysis) -> bool {
 fn bin_type(op: BinOp, lt: &Ty, rt: &Ty, span: Span, module: &str, a: &mut Analysis) -> Ty {
     use BinOp::*;
     match op {
+        BitAnd | BitOr | BitXor | Shl | Shr => match (lt, rt) {
+            (Ty::Int, Ty::Int) => Ty::Int,
+            (Ty::Err, _) | (_, Ty::Err) => Ty::Err,
+            _ => {
+                a.err(
+                    format!("bitwise {} works on ints, got {} and {}", op_name(op), lt.show(a), rt.show(a)),
+                    span,
+                    module,
+                );
+                Ty::Err
+            }
+        },
         Add => match (lt, rt) {
             (Ty::Int, Ty::Int) => Ty::Int,
             (Ty::Float, Ty::Float) | (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) => Ty::Float,
@@ -2397,6 +2417,11 @@ fn op_name(op: BinOp) -> &'static str {
         BinOp::Div => "/",
         BinOp::Mod => "%",
         BinOp::Pow => "**",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
     }
 }
 

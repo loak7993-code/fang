@@ -276,3 +276,51 @@ function types are annotations now (`fn(A, B) -> C`).
 | `not_found()` | `-> Response` 404 |
 
 Verified with curl: GET and POST (Content-Length bodies) both round-trip.
+
+## tui
+
+Terminal UI in pure Fang: ANSI escape codes, a screen buffer, and
+raw-mode key input. Works on any terminal (Linux, macOS, BSD, and
+Windows 10+ terminals all speak ANSI).
+
+```fang
+import tui
+
+tui.init()
+s = tui.screen(40, 12)
+tui.scr_box(s, 0, 0, 40, 12)
+tui.scr_set_str(s, 2, 1, "hello from fang")
+x = 2
+while true:
+  tui.scr_fill(s, 2, 3, 36, 1, " ")
+  tui.scr_set(s, x, 3, "@")
+  tui.scr_draw(s)
+  k = tui.read_key(30)
+  if k == tui.KEY_LEFT:
+    x = x - 1
+  elif k == tui.KEY_RIGHT:
+    x = x + 1
+  elif k == 113:  # q
+    break
+tui.done()
+```
+
+| Function | Type |
+|----------|------|
+| `init()` / `done()` | raw mode on / terminal restored |
+| `screen(w, h)` | `-> Screen` cell buffer |
+| `scr_set(s, x, y, ch)` / `scr_set_str(s, x, y, text)` | write cells |
+| `scr_fill(s, x, y, w, h, ch)` / `scr_box(s, x, y, w, h)` | fill / box |
+| `scr_draw(s)` | paint the whole buffer |
+| `read_key(timeout_ms)` | `-> int` key or KEY_NONE |
+| `fg(c)` / `bg(c)` / `bold()` / `reset()` / `style(f, b, is_bold)` | `-> str` ANSI |
+| `goto(x, y)` / `clear()` / `hide_cursor()` / `show_cursor()` | cursor control |
+| `write(s)` | raw output, no newline |
+
+Key constants: `KEY_NONE, KEY_ESCAPE, KEY_UP, KEY_DOWN, KEY_LEFT,
+KEY_RIGHT, KEY_HOME, KEY_END, KEY_DELETE, KEY_PAGE_UP, KEY_PAGE_DOWN`.
+Colors: `BLACK..WHITE`, `DEFAULT`.
+
+`examples/chip8.fang` is a complete CHIP-8 emulator built on this module:
+64x32 display, all 35 opcodes, the original HEX keypad on 1234/qwer/
+asdf/zxcv, and a `--frames N` headless mode for testing.

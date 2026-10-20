@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.3.0] - 2026-10-20
+
+From scratch, in the language: TUI apps, emulators, and Python-style
+module state.
+
+### Added
+
+- `tui` module: terminal UI in pure Fang. ANSI styling, cursor
+  control, a screen buffer with box/fill/text drawing, and raw-mode
+  key input (arrows, page keys, escape disambiguation). No
+  dependencies beyond the terminal itself.
+- `examples/chip8.fang`: a complete CHIP-8 emulator built on tui.
+  All 35 opcodes, the original HEX keypad, 64x32 display, sound and
+  delay timers, `--frames N` headless mode for deterministic tests.
+- Module-level `let` creates a mutable global, exactly like Python:
+  every function in the file sees it and can change it. Initialized
+  before main in dependency-free order; the old "must be a constant
+  expression" error is gone.
+- Bitwise operators `& | ^ << >>` with C precedence, plus `0xFF` hex
+  and `0b1010` binary integer literals.
+- `fang run file.fang -- args` forwards everything after `--` to the
+  program as `os.args()`.
+- Structs can hold list and dict fields; collection types are
+  forward-declared before struct definitions (was a documented
+  limitation).
+- `str.byte_at(s, i)` for byte-level reads; `math.rand_int(n)`;
+  `tui`-facing runtime terminal primitives (`fang_term_raw`,
+  `fang_term_restore`, `fang_read_key_ms`).
+- Lexer supports `\xHH` and `\uHHHH` escapes and `\e`.
+
+### Fixed
+
+- The guard pattern `if bad: return` followed by more statements
+  no longer raises a false "not every path returns" error in void
+  functions.
+- Formatting preserves `: type` annotations on top-level let.
+
 ## [1.2.0] - 2026-10-20
 
 Build anything, from backend websites to kernels.

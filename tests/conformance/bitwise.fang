@@ -1,0 +1,10 @@
+# Bitwise operators and hex/binary literals.
+mask = 0xF0 | 0x0F
+low = 255 & 0x0F
+flip = 5 ^ 3
+wide = 1 << 8
+narrow = 256 >> 4
+bits = 0b1010
+print(mask, low, flip, wide, narrow, bits)
+x = 0b1100 & 0b1010
+print(x)

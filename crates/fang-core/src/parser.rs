@@ -226,10 +226,15 @@ impl<'a> Parser<'a> {
 
     fn const_decl(&mut self, exported: bool, kw: Token) -> PResult<Item> {
         let (name, _) = self.ident_tok("constant name after 'let'")?;
+        let ann = if self.eat(&Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
         self.expect(&Eq, "'='")?;
         let value = self.expr()?;
         self.finish_line()?;
-        Ok(Item::Const { name, value, exported, span: tok_span(&kw) })
+        Ok(Item::Const { name, ann, value, exported, span: tok_span(&kw) })
     }
 
     fn extern_fn(&mut self) -> PResult<Item> {
@@ -739,7 +744,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_cmp(&mut self) -> PResult<Expr> {
-        let left = self.parse_add()?;
+        let left = self.parse_bit_or()?;
         let op = match self.peek_kind() {
             EqEq => CmpOp::Eq,
             NotEq => CmpOp::Ne,
@@ -766,6 +771,71 @@ impl<'a> Parser<'a> {
             kind: ExprKind::Compare(op, Box::new(left), Box::new(right)),
             span: tok_span(&t),
         })
+    }
+
+    fn parse_bit_or(&mut self) -> PResult<Expr> {
+        let mut left = self.parse_bit_xor()?;
+        loop {
+            let op = match self.peek_kind() {
+                Pipe => BinOp::BitOr,
+                _ => return Ok(left),
+            };
+            let t = self.advance();
+            let right = self.parse_bit_xor()?;
+            left = Expr {
+                kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
+                span: tok_span(&t),
+            };
+        }
+    }
+
+    fn parse_bit_xor(&mut self) -> PResult<Expr> {
+        let mut left = self.parse_bit_and()?;
+        loop {
+            let op = match self.peek_kind() {
+                Caret => BinOp::BitXor,
+                _ => return Ok(left),
+            };
+            let t = self.advance();
+            let right = self.parse_bit_and()?;
+            left = Expr {
+                kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
+                span: tok_span(&t),
+            };
+        }
+    }
+
+    fn parse_bit_and(&mut self) -> PResult<Expr> {
+        let mut left = self.parse_shift()?;
+        loop {
+            let op = match self.peek_kind() {
+                Amp => BinOp::BitAnd,
+                _ => return Ok(left),
+            };
+            let t = self.advance();
+            let right = self.parse_shift()?;
+            left = Expr {
+                kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
+                span: tok_span(&t),
+            };
+        }
+    }
+
+    fn parse_shift(&mut self) -> PResult<Expr> {
+        let mut left = self.parse_add()?;
+        loop {
+            let op = match self.peek_kind() {
+                Shl => BinOp::Shl,
+                Shr => BinOp::Shr,
+                _ => return Ok(left),
+            };
+            let t = self.advance();
+            let right = self.parse_add()?;
+            left = Expr {
+                kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
+                span: tok_span(&t),
+            };
+        }
     }
 
     fn parse_add(&mut self) -> PResult<Expr> {
@@ -1267,6 +1337,11 @@ fn expr_kind_name(k: &ExprKind) -> &'static str {
 
 fn describe(k: &TokKind) -> String {
     match k {
+        Amp => "'&'".into(),
+        Pipe => "'|'".into(),
+        Caret => "'^'".into(),
+        Shl => "'<<'".into(),
+        Shr => "'>>'".into(),
         Int(_) => "an integer".into(),
         Float(_) => "a float".into(),
         Str(s) => format!("string \"{}\"", s),
