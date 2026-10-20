@@ -23,19 +23,15 @@ const LESSONS: &[Lesson] = &[
     Lesson {
         title: "1. Making the computer talk",
         teach: "\
-Every program is a list of instructions. The simplest instruction is
-print: it shows text on the screen. Text in Fang is written between
-double quotes. Every program starts from a function called main, and
-the lines inside it run one after another.",
-        program: "\
-fn main():
-  print(\"___\")",
+A program is a file of lines, run top to bottom. The simplest
+instruction is print: it shows text on the screen. Text goes between
+double quotes. No wrapper, no ceremony: the file IS the program.",
+        program: "print(\"___\")",
         expect: "hello, fang\n",
         hint: "Type hello, fang between the quotes. Keep the quotes.",
         recap: "\
-You wrote a program. The fn main(): line says where the program
-starts, the two spaces say \"this line belongs to main\", and print
-showed your text. That structure carries everything else you learn.",
+You wrote a program. One line, run top to bottom. Every longer
+program is just more lines.",
     },
     Lesson {
         title: "2. Naming values",
@@ -45,9 +41,8 @@ you can use the name anywhere you would use the value, and you can
 change it with =. f-strings (the f before the quote) let you put
 values inside text between braces.",
         program: "\
-fn main():
-  let name = \"___\"
-  print(f\"hi {name}\")",
+name = \"___\"
+print(f\"hi {name}\")",
         expect: "hi fang\n",
         hint: "Fill the blank with the word: fang (no quotes, it is already quoted).",
         recap: "\
@@ -62,10 +57,9 @@ Fang does arithmetic: + - * / and % (remainder after division).
 Division of whole numbers drops the fraction: 7 / 2 is 3.
 Write 7.0 / 2 for 3.5.",
         program: "\
-fn main():
-  let a = 6
-  let b = ___
-  print(a * b)",
+a = 6
+b = ___
+print(a * b)",
         expect: "42\n",
         hint: "You need a number that makes 6 times it equal 42.",
         recap: "Arithmetic works the way you expect. Whole-number division truncates; write 7.0 / 2 when you want the fraction.",
@@ -77,12 +71,11 @@ Programs choose with if. The condition goes after if, a colon ends
 the question, and the indented lines underneath run only when the
 condition is true. else gives the other path.",
         program: "\
-fn main():
-  let age = ___
-  if age >= 18:
-    print(\"adult\")
-  else:
-    print(\"minor\")",
+age = ___
+if age >= 18:
+  print(\"adult\")
+else:
+  print(\"minor\")",
         expect: "adult\n",
         hint: "Pick a number that is 18 or higher.",
         recap: "if runs its block only when the condition holds. >= means greater-or-equal. Conditions are true or false, nothing else.",
@@ -94,9 +87,8 @@ for repeats lines. `for i in 0..5:` runs its block with i set to
 0, 1, 2, 3, 4 in turn. The range 0..5 stops before 5. If you want to
 include the end, write 0..=5.",
         program: "\
-fn main():
-  for i in 1..___:
-    print(f\"count {i}\")",
+for i in 1..___:
+  print(f\"count {i}\")",
         expect: "count 1\ncount 2\ncount 3\n",
         hint: "The range stops right before the number. You want 1, 2, 3 printed.",
         recap: "The loop ran the print three times, once per value. Loops plus decisions are most of programming.",
@@ -108,9 +100,8 @@ A list holds several values in order. You build one with square
 brackets, reach into it with [position], and len tells you how many
 it holds. Positions start at 0, and -1 means the last one.",
         program: "\
-fn main():
-  let fruits = [\"apple\", \"banana\", \"cherry\"]
-  print(fruits[___])",
+fruits = [\"apple\", \"banana\", \"cherry\"]
+print(fruits[___])",
         expect: "banana\n",
         hint: "Positions start counting at 0. Apple is position 0.",
         recap: "fruits[0] is apple, fruits[1] is banana. len(fruits) is 3. Lists are the workhorse for collections of things.",
@@ -118,18 +109,17 @@ fn main():
     Lesson {
         title: "7. Teaching the computer new words",
         teach: "\
-A function is your own instruction. fn names it, the values it needs
-go in parentheses with their types, and return hands a value back.
-You then call it by name anywhere.",
+A function is your own instruction: fn names it, the values it needs
+go in parentheses. No types needed, and no return either: the last
+expression IS the value it gives back.",
         program: "\
-fn double(n: int) -> int:
-  return n * ___
+fn double(n):
+  n * ___
 
-fn main():
-  print(double(21))",
+print(double(21))",
         expect: "42\n",
         hint: "double should multiply by 2.",
-        recap: "You defined double and called it. The -> int says what it gives back. Functions let you name an idea once and reuse it everywhere.",
+        recap: "You defined double and called it. The last line of a function is its value, just like a script. Functions let you name an idea once and reuse it everywhere.",
     },
     Lesson {
         title: "9. Dictionaries",
@@ -210,11 +200,10 @@ Everything together: a guessing game. The program picks a secret,
 loops while the guess is wrong, and reacts. Lists, functions, if,
 and while in ten lines. Fill in what a correct guess prints.",
         program: "\
-fn main():
-  let secret = 7
-  print(\"guess a number between 1 and 10\")
-  let guesses = [3, 9, 7]
-  for guess in guesses:
+secret = 7
+print(\"guess a number between 1 and 10\")
+guesses = [3, 9, 7]
+for guess in guesses:
     if guess == secret:
       print(\"___\")
     elif guess < secret:
@@ -392,7 +381,7 @@ pub fn cmd_new(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     let main = format!(
-        "# {} - your first Fang program\nfn main():\n  print(\"hello from {}\")\n",
+        "# {} - your first Fang program\nprint(\"hello from {}\")\n",
         name, name
     );
     if let Err(e) = std::fs::write(dir.join("main.fang"), main) {

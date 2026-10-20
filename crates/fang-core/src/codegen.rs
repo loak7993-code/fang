@@ -574,7 +574,7 @@ impl<'a> Gen<'a> {
             fg.locals.push(var);
         }
 
-        fg.stmts(&f.body, self);
+        emit_body_with_trailing(&mut fg, &f.body, &fi.ret, self);
 
         let params = self.fn_params(fi);
         let ret = self.ctype_ret(&fi.ret);
@@ -1815,7 +1815,7 @@ impl<'a> FnGen<'a> {
                     fg.scopes.last_mut().unwrap().insert(param_names[i].clone(), var.clone());
                     fg.locals.push(var);
                 }
-                fg.stmts(&f.body, g);
+                emit_body_with_trailing(&mut fg, &f.body, &cinfo.ret, g);
                 let cleanup = fg.cleanup_stmts(g);
                 fg.buf.push_str(&cleanup);
                 let is_void = matches!(cinfo.ret, Ty::Void | Ty::Err);
@@ -2790,6 +2790,32 @@ fn debug_kind(elem: &Ty) -> i32 {
         Ty::Float => 2,
         Ty::Bool => 4,
         _ => 3,
+    }
+}
+
+fn emit_body_with_trailing(fg: &mut crate::codegen::FnGen, body: &[Stmt], ret: &Ty, g: &crate::codegen::Gen) {
+    let n = body.len();
+    if n == 0 {
+        return;
+    }
+    let (last, rest) = body.split_last().unwrap();
+    let implicit_ret = !matches!(ret, Ty::Void | Ty::Err)
+        && matches!(&last.kind, StmtKind::Expr(_));
+    if implicit_ret {
+        if let [prefix @ ..] = rest {
+            fg.stmts(prefix, g);
+        }
+        if let StmtKind::Expr(e) = &last.kind {
+            fg.line_of(last);
+            let (code, _t, fresh) = fg.gen_expr(e, g);
+            if !fresh && matches!(ret, Ty::Str | Ty::List(_) | Ty::Dict(_, _) | Ty::Struct(_)) {
+                fg.w(&format!("leo_incref((void*)({}));", code));
+            }
+            fg.w(&format!("__ret = {}; goto __exit;", code));
+            fg.flush_temps(g);
+        }
+    } else {
+        fg.stmts(body, g);
     }
 }
 

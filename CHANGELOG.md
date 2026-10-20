@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.0] - 2026-10-20
+
+Type less words.
+
+### Added
+
+- Implicit returns: the last expression of a function body is its
+  return value. `fn double(n): n * 2` — no `return` keyword. Lambdas
+  too: `xs.map(fn(x): x * 2)`. Explicit `return` still exits early
+  and mixes freely.
+- Single-line function bodies accept a bare expression:
+  `fn(x): x * 2` inside call parentheses.
+- The interactive course teaches script style from lesson one: every
+  program is plain top-level lines, functions appear in lesson 7
+  without types or return, and no lesson uses `fn main():`.
+- `fang new` scaffolds a one-line script starter.
+
+## [1.0.0] - 2026-10-20
+
 ## [1.0.0] - 2026-10-20
 
 Renamed to Fang (previously Leo, briefly Volt). The whole repository:

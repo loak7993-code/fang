@@ -15,8 +15,9 @@ while cond:                   loop while true         while x < 10:
 for i in 0..10:               count (stops before 10)  for i in 0..=10:  (include 10)
 for x in xs:                  loop over a list        for k, v in d.items():
 break / continue / pass       control a loop          break
-fn name(a, b):                function (types optional)  fn double(n): return n * 2
-fn name(a: int) -> int:       with types and return   struct method: fn T.m(self)
+fn name(a, b):                function, no return     fn double(n): n * 2
+                              keyword needed           (last expr returns)
+fn T.m(self):                 method                  return exits early
 struct Name:                  bundled fields          p = Point(3.0, 4.0)
 p.field                       read a field            lists: xs[0]  xs[-1]  xs[1:3]
 xs.push(v) / pop / sort       lists also: map, filter, reduce, contains

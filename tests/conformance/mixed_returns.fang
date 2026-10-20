@@ -1,0 +1,6 @@
+fn classify(n):
+  if n > 10:
+    return "big"
+  return "small"
+
+print(classify(5), classify(50))

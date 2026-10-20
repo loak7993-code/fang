@@ -868,7 +868,7 @@ fn infer_fn(f: &FnDecl, module: &str, a: &mut Analysis) {
         loop_depth: 0,
     };
     a.in_progress.insert(mangled.clone());
-    let inferred = infer_block(&f.body, module, a, &mut ctx, declared, is_void_declared);
+    let inferred = infer_block_top(&f.body, module, a, &mut ctx, declared, is_void_declared, true);
     a.in_progress.remove(&mangled);
 
     if let Some(fi) = a.fns.get_mut(&mangled) {
@@ -976,7 +976,31 @@ fn infer_block(
     declared: Ty,
     declared_is_none: bool,
 ) -> Ty {
-    let info = block_ret_info(stmts, module, a, ctx);
+    infer_block_top(stmts, module, a, ctx, declared, declared_is_none, false)
+}
+
+/// fn_top: the body belongs directly to a function, so a trailing
+/// expression statement is the implicit return value.
+fn infer_block_top(
+    stmts: &[Stmt],
+    module: &str,
+    a: &mut Analysis,
+    ctx: &mut Ctx,
+    declared: Ty,
+    declared_is_none: bool,
+    fn_top: bool,
+) -> Ty {
+    let mut info = block_ret_info(stmts, module, a, ctx);
+    if fn_top {
+        if let Some(last) = stmts.last() {
+            if let StmtKind::Expr(e) = &last.kind {
+                if let Some(t) = a.ty.get(&(module.to_string(), e.span.start)) {
+                    info.merge_seen(t.clone(), last.span, module, a);
+                    info.guaranteed = true;
+                }
+            }
+        }
+    }
     if info.seen.is_some() && !info.guaranteed {
         a.errors.push(SemaError {
             msg: "not every path returns a value; add a return at the end or an else branch"
@@ -1858,13 +1882,14 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
             for (p, ty) in f.params.iter().zip(params.iter()) {
                 sub.declare(&p.name, ty.clone());
             }
-            let inferred = infer_block(
+            let inferred = infer_block_top(
                 &f.body,
                 module,
                 a,
                 &mut sub,
                 declared.clone().unwrap_or(Ty::Err),
                 f.ret.is_none(),
+                true,
             );
             ctx.scopes.pop();
             if let Some(d) = &declared {

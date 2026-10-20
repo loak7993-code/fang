@@ -340,10 +340,12 @@ impl<'a> Parser<'a> {
                 span: tok_span(&t),
             }]);
         }
-        perr(
-            "a single-line function body must be `return <expr>`; use an indented block for more".to_string(),
-            self.peek(),
-        )
+        // A bare expression is the body: its value is returned.
+        let e = self.expr()?;
+        Ok(vec![Stmt {
+            kind: StmtKind::Expr(e.clone()),
+            span: e.span,
+        }])
     }
 
     /// Block content after ':' NEWLINE INDENT.
