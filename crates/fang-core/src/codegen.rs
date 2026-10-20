@@ -22,6 +22,47 @@ pub struct GenOpts {
 }
 
 /// Generate the full C source for a program.
+/// One cached compilation unit: a module's C plus its header.
+pub struct ModUnit {
+    pub module: String,
+    pub c: String,
+    pub h: String,
+}
+
+/// A program split into per-module units: every non-entry module is
+/// content-stable across programs that import it, so its object file
+/// can be cached. Only the entry TU changes per program.
+pub struct Program {
+    pub mods: Vec<ModUnit>,
+    pub entry_c: String,
+    /// Init order for module globals: imports first, entry last.
+    pub ginit_order: Vec<String>,
+}
+
+pub fn generate_modular(
+    sources: &[SourceUnit],
+    a: &crate::sema::Analysis,
+    entry: &str,
+    opts: &GenOpts,
+) -> Result<Program, String> {
+    let mut g = Gen {
+        sources,
+        reachable: HashSet::new(),
+        a,
+        opts,
+        out: String::new(),
+        pool: HashMap::new(),
+        pool_order: Vec::new(),
+        used_headers: BTreeSet::new(),
+        used_eq_helpers: HashSet::new(),
+        extra_decls: std::cell::RefCell::new(String::new()),
+        extra_fns: std::cell::RefCell::new(String::new()),
+        stamped_sigs: std::cell::RefCell::new(HashSet::new()),
+        fns_external: false,
+    };
+    g.run_modular(entry)
+}
+
 pub fn generate(
     sources: &[SourceUnit],
     a: &Analysis,
@@ -41,6 +82,7 @@ pub fn generate(
         extra_decls: std::cell::RefCell::new(String::new()),
         extra_fns: std::cell::RefCell::new(String::new()),
         stamped_sigs: std::cell::RefCell::new(HashSet::new()),
+        fns_external: false,
     };
     g.run(entry)
 }
@@ -63,9 +105,854 @@ struct Gen<'a> {
     extra_fns: std::cell::RefCell<String>,
     /// Signature keys already stamped.
     stamped_sigs: std::cell::RefCell<HashSet<String>>,
+    /// Module TUs get external fn linkage (header prototypes match).
+    pub(crate) fns_external: bool,
 }
 
 impl<'a> Gen<'a> {
+    /// Dependency edges of a module: imports plus method-sugar call
+    /// edges (s.find(..) reaches the str module without an import).
+    fn module_deps(&self, m: &str) -> Vec<String> {
+        let mut deps: Vec<String> = Vec::new();
+        if let Some(ims) = self.a.imports.get(m) {
+            for im in ims.clone() {
+                if !deps.contains(&im) {
+                    deps.push(im);
+                }
+            }
+        }
+        for ((cm, _), target) in &self.a.call {
+            if cm != m {
+                continue;
+            }
+            let callee_module = match target {
+                crate::sema::CallTarget::Fn(mangled)
+                | crate::sema::CallTarget::FnSelf(mangled) => {
+                    self.a.fns.get(mangled).map(|fi| fi.module.clone())
+                }
+                crate::sema::CallTarget::StructNew(mangled) => self
+                    .a
+                    .structs
+                    .get(mangled)
+                    .map(|si| si.module.clone()),
+                _ => None,
+            };
+            if let Some(cm2) = callee_module {
+                if cm2 != m && !deps.contains(&cm2) {
+                    deps.push(cm2);
+                }
+            }
+        }
+        deps
+    }
+
+    /// Topological order over import+call edges, deps first, entry last.
+    fn topo_order(&self, entry: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        fn visit(
+            m: &str,
+            seen: &mut HashSet<String>,
+            out: &mut Vec<String>,
+            deps_of: &dyn Fn(&str) -> Vec<String>,
+        ) {
+            if !seen.insert(m.to_string()) {
+                return;
+            }
+            for d in deps_of(m) {
+                visit(&d, seen, out, deps_of);
+            }
+            out.push(m.to_string());
+        }
+        let g = self;
+        let deps_of = move |m: &str| g.module_deps(m);
+        visit(entry, &mut seen, &mut out, &deps_of);
+        out
+    }
+
+    fn module_insts(&self, scope: &str) -> BTreeSet<Ty> {
+        let mut out: BTreeSet<Ty> = BTreeSet::new();
+        let mut work: Vec<Ty> = Vec::new();
+        for fi in self.a.fns.values() {
+            if fi.module != scope {
+                continue;
+            }
+            for p in &fi.params {
+                work.push(p.ty.clone());
+            }
+            work.push(fi.ret.clone());
+        }
+        for si in self.a.structs.values() {
+            if si.module != scope {
+                continue;
+            }
+            for (_, t) in &si.fields {
+                work.push(t.clone());
+            }
+        }
+        work.extend(
+            self.a
+                .ty
+                .iter()
+                .filter(|((m, _), _)| m == scope)
+                .map(|(_, t)| t.clone()),
+        );
+        work.extend(
+            self.a
+                .for_binders
+                .iter()
+                .filter(|((m, _), _)| m == scope)
+                .flat_map(|(_, v)| v.iter().cloned()),
+        );
+        work.extend(
+            self.a
+                .catch_ty
+                .iter()
+                .filter(|((m, _), _)| m == scope)
+                .map(|(_, t)| t.clone()),
+        );
+        while let Some(t) = work.pop() {
+            match &t {
+                Ty::List(e) => {
+                    if out.insert(t.clone()) {
+                        work.push((**e).clone());
+                    }
+                }
+                Ty::Dict(k, v) => {
+                    if out.insert(t.clone()) {
+                        let kv = Ty::Tuple(Box::new((**k).clone()), Box::new((**v).clone()));
+                        out.insert(Ty::List(Box::new(kv.clone())));
+                        out.insert(kv);
+                        out.insert(Ty::List(Box::new((**k).clone())));
+                        out.insert(Ty::List(Box::new((**v).clone())));
+                        work.push((**k).clone());
+                        work.push((**v).clone());
+                    }
+                }
+                Ty::Tuple(a, b) if out.insert(t.clone()) => {
+                    work.push((**a).clone());
+                    work.push((**b).clone());
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Which modules' headers does this module need (struct-by-value use)?
+    fn header_deps(&self, scope: &str) -> Vec<String> {
+        fn scan(
+            t: &Ty,
+            scope: &str,
+            structs: &HashMap<String, crate::sema::StructInfo>,
+            deps: &mut Vec<String>,
+        ) {
+            match t {
+                Ty::Struct(m) => {
+                    if let Some(si) = structs.get(m) {
+                        if si.module != scope && !deps.contains(&si.module) {
+                            deps.push(si.module.clone());
+                        }
+                    }
+                }
+                Ty::List(e) => scan(e, scope, structs, deps),
+                Ty::Dict(k, v) => {
+                    scan(k, scope, structs, deps);
+                    scan(v, scope, structs, deps);
+                }
+                Ty::Tuple(a, b) => {
+                    scan(a, scope, structs, deps);
+                    scan(b, scope, structs, deps);
+                }
+                _ => {}
+            }
+        }
+        let mut deps: Vec<String> = Vec::new();
+        for fi in self.a.fns.values() {
+            if fi.module != scope {
+                continue;
+            }
+            for p in &fi.params {
+                scan(&p.ty, scope, &self.a.structs, &mut deps);
+            }
+            scan(&fi.ret, scope, &self.a.structs, &mut deps);
+        }
+        for si in self.a.structs.values() {
+            if si.module != scope {
+                continue;
+            }
+            for (_, t) in &si.fields {
+                scan(t, scope, &self.a.structs, &mut deps);
+            }
+        }
+        deps
+    }
+
+    fn emit_forward_typedefs(&mut self, insts: &BTreeSet<Ty>) {
+        for t in insts {
+            match t {
+                Ty::List(e) => {
+                    let es = self.sfx(e);
+                    writeln!(self.out, "typedef struct fang_list_{0} fang_list_{0};", es).unwrap();
+                }
+                Ty::Dict(k, v) => {
+                    let ks = self.sfx(k);
+                    let vs = self.sfx(v);
+                    writeln!(self.out, "typedef struct fang_dict_{0}_{1} fang_dict_{0}_{1};", ks, vs).unwrap();
+                    writeln!(self.out, "typedef struct fang_dslot_{0}_{1} fang_dslot_{0}_{1};", ks, vs).unwrap();
+                }
+                Ty::Tuple(a, b) => {
+                    let asx = self.sfx(a);
+                    let bsx = self.sfx(b);
+                    writeln!(self.out, "typedef struct fang_tuple_{0}_{1} fang_tuple_{0}_{1};", asx, bsx).unwrap();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn emit_stamps(&mut self, insts: &BTreeSet<Ty>) -> Result<(), String> {
+        for t in insts {
+            if let Ty::Tuple(x, y) = t {
+                writeln!(
+                    self.out,
+                    "FANG_TUPLE_DEFINE({}, {}, {}, {})",
+                    self.sfx(x),
+                    self.sfx(y),
+                    self.ctype(x),
+                    self.ctype(y)
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        for t in insts {
+            if let Ty::List(e) = t {
+                self.emit_list_stamp(e);
+            }
+        }
+        for t in insts {
+            if let Ty::Dict(k, v) = t {
+                self.emit_dict_stamp(k, v);
+            }
+        }
+        Ok(())
+    }
+
+    fn struct_header_part(&mut self, mangled: &str, h: &mut String) {
+        let Some(si) = self.a.structs.get(mangled) else { return; };
+        let sname = format!("fang_{}", mangled);
+        writeln!(h, "typedef struct {} {{", sname).unwrap();
+        for (fname, ft) in &si.fields {
+            let cty = match ft {
+                Ty::Str => {
+                    if self.opts.freestanding {
+                        "void*".to_string()
+                    } else {
+                        "fang_str*".into()
+                    }
+                }
+                other => self.ctype(other),
+            };
+            writeln!(h, "    {} {};", cty, fname).unwrap();
+        }
+        writeln!(h, "}} {};", sname).unwrap();
+        let params: Vec<String> = si
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, (_, t))| format!("{} a{}", self.ctype(t), i))
+            .collect();
+        writeln!(
+            h,
+            "{} {}_new({});",
+            sname,
+            sname,
+            params.join(", ")
+        )
+        .unwrap();
+        let comparable = si
+            .fields
+            .iter()
+            .all(|(_, t)| matches!(t, Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Ptr));
+        if comparable {
+            writeln!(h, "bool {}_eq({}, {} b);", sname, sname, sname).unwrap();
+        }
+    }
+
+    fn struct_body_part(&mut self, mangled: &str) {
+        let Some(si) = self.a.structs.get(mangled) else { return; };
+        let sname = format!("fang_{}", mangled);
+        let params: Vec<String> = si
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, (_, t))| format!("{} a{}", self.ctype(t), i))
+            .collect();
+        let assigns: Vec<String> = si
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, (n, _))| format!("s.{} = a{};", n, i))
+            .collect();
+        writeln!(
+            self.out,
+            "{} {}_new({}) {{\n    {} s;\n    {}\n    return s;\n}}",
+            sname,
+            sname,
+            params.join(", "),
+            sname,
+            assigns.join("\n    ")
+        )
+        .unwrap();
+        let comparable = si
+            .fields
+            .iter()
+            .all(|(_, t)| matches!(t, Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Ptr));
+        if comparable {
+            let conds: Vec<String> = si
+                .fields
+                .iter()
+                .map(|(n, t)| match t {
+                    Ty::Str => format!("fang_str_eq(a.{}, b.{})", n, n),
+                    _ => format!("a.{} == b.{}", n, n),
+                })
+                .collect();
+            let cond = if conds.is_empty() {
+                "true".to_string()
+            } else {
+                conds.join(" && ")
+            };
+            writeln!(
+                self.out,
+                "bool {}_eq({} a, {} b) {{\n    return {};\n}}",
+                sname, sname, sname, cond
+            )
+            .unwrap();
+        }
+    }
+
+    fn run_modular(&mut self, entry: &str) -> Result<Program, String> {
+        // Reachability, same as the single-TU path.
+        let mut reach = HashSet::new();
+        let mut queue = vec![entry.to_string()];
+        while let Some(m) = queue.pop() {
+            if !reach.insert(m.clone()) {
+                continue;
+            }
+            if let Some(imports) = self.a.imports.get(&m) {
+                for im in imports.clone() {
+                    queue.push(im);
+                }
+            }
+            for ((cm, _), target) in &self.a.call {
+                if cm != &m {
+                    continue;
+                }
+                let callee_module = match target {
+                    crate::sema::CallTarget::Fn(mangled)
+                    | crate::sema::CallTarget::FnSelf(mangled) => {
+                        self.a.fns.get(mangled).map(|fi| fi.module.clone())
+                    }
+                    crate::sema::CallTarget::StructNew(mangled) => self
+                        .a
+                        .structs
+                        .get(mangled)
+                        .map(|si| si.module.clone()),
+                    _ => None,
+                };
+                if let Some(cm2) = callee_module {
+                    if !reach.contains(&cm2) {
+                        queue.push(cm2);
+                    }
+                }
+            }
+        }
+        self.reachable = reach;
+
+        let order = self.topo_order(entry);
+        let mut mods: Vec<ModUnit> = Vec::new();
+
+        for mname in &order {
+            if mname == entry {
+                continue;
+            }
+            let u = match self.sources.iter().find(|u| &u.name == mname) {
+                Some(u) => u,
+                None => continue,
+            };
+            // Header: includes, struct defs, prototypes, extern globals.
+            let mut h = String::new();
+            writeln!(h, "/* fang module header: {} */", mname).unwrap();
+            writeln!(h, "#pragma once").unwrap();
+            writeln!(h, "#include \"fang_rt.h\"").unwrap();
+            for dep in self.header_deps(mname) {
+                if dep != *mname && order.contains(&dep) && dep != *entry {
+                    writeln!(h, "#include \"fang_mod_{dep}.h\"", dep = dep).unwrap();
+                }
+            }
+            writeln!(h).unwrap();
+            // extern headers used by this module's extern fns
+            let mut mheaders: BTreeSet<String> = BTreeSet::new();
+            for item in &u.module.items {
+                if let Item::ExternFn { header, .. } = item {
+                    let ht = header.trim();
+                    if !ht.is_empty()
+                        && ht.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-'))
+                    {
+                        mheaders.insert(ht.to_string());
+                    }
+                }
+            }
+            for hh in &mheaders {
+                writeln!(h, "#include <{}>", hh).unwrap();
+            }
+            let h_insts = self.module_insts(mname);
+            {
+                let mut hh = h.clone();
+                let saved = std::mem::take(&mut self.out);
+                self.emit_forward_typedefs(&h_insts);
+                hh.push_str(&self.out);
+                self.out = saved;
+                h = hh;
+            }
+            writeln!(h).unwrap();
+            // struct defs owned by this module
+            let mut h2 = h.clone();
+            let mut owned: Vec<String> = self
+                .a
+                .structs
+                .values()
+                .filter(|si| &si.module == mname)
+                .map(|si| si.mangled.clone())
+                .collect();
+            owned.sort();
+            for mangled in &owned {
+                self.struct_header_part(mangled, &mut h2);
+            }
+            h = h2;
+            writeln!(h).unwrap();
+            // prototypes + extern globals + ginit declaration
+            let mut protos = String::new();
+            let mut mod_fns: Vec<&crate::sema::FnInfo> = self
+                .a
+                .fns
+                .values()
+                .filter(|fi| fi.module == *mname && !fi.is_extern)
+                .collect();
+            mod_fns.sort_by(|x, y| x.mangled.cmp(&y.mangled));
+            for fi in mod_fns {
+                let params = self.fn_params(fi);
+                let ret = self.ctype_ret(&fi.ret);
+                writeln!(protos, "{} {}({});", ret, fi.mangled, params).unwrap();
+            }
+            writeln!(protos, "void fang_ginit_{}(void);", mname).unwrap();
+            h.push_str(&protos);
+            writeln!(h).unwrap();
+            for item in &u.module.items {
+                if let Item::Const { name, .. } = item {
+                    let gm = format!("g_{}_{}", mname, name);
+                    if let Some(ty) = self.a.globals.get(&gm) {
+                        writeln!(h, "extern {} {};", self.ctype(ty), gm).unwrap();
+                    }
+                }
+            }
+
+            // C body for the module.
+            let mut c = String::new();
+            writeln!(c, "/* fang module: {} */", mname).unwrap();
+            writeln!(c, "#include \"fang_mod_{m}.h\"", m = mname).unwrap();
+            // Callee modules: imports plus call edges (method sugar
+            // reaches str without an import). Topo order.
+            {
+                let mut callees: Vec<String> = Vec::new();
+                if let Some(ims) = self.a.imports.get(mname) {
+                    for im in ims.clone() {
+                        if !callees.contains(&im) {
+                            callees.push(im);
+                        }
+                    }
+                }
+                for ((cm, _), target) in &self.a.call {
+                    if cm != mname {
+                        continue;
+                    }
+                    let callee_module = match target {
+                        crate::sema::CallTarget::Fn(mangled)
+                        | crate::sema::CallTarget::FnSelf(mangled) => {
+                            self.a.fns.get(mangled).map(|fi| fi.module.clone())
+                        }
+                        crate::sema::CallTarget::StructNew(mangled) => self
+                            .a
+                            .structs
+                            .get(mangled)
+                            .map(|si| si.module.clone()),
+                        _ => None,
+                    };
+                    if let Some(cm2) = callee_module {
+                        if cm2 != *mname && !callees.contains(&cm2) {
+                            callees.push(cm2);
+                        }
+                    }
+                }
+                for dep in &order {
+                    if callees.contains(dep) && dep != mname && dep != entry {
+                        writeln!(c, "#include \"fang_mod_{m}.h\"", m = dep).unwrap();
+                    }
+                }
+            }
+            writeln!(c).unwrap();
+            let insts = self.module_insts(mname);
+            {
+                let saved = std::mem::take(&mut self.out);
+                self.emit_forward_typedefs(&insts);
+                c.push_str(&self.out);
+                self.out = saved;
+            }
+            writeln!(c).unwrap();
+            // module-owned struct function bodies
+            let saved = std::mem::take(&mut self.out);
+            for mangled in &owned {
+                self.struct_body_part(mangled);
+            }
+            c.push_str(&self.out);
+            self.out = saved;
+            writeln!(c).unwrap();
+            // stamps (static: each TU carries its own copies; the
+            // linker strips unreferenced sections)
+            let saved = std::mem::take(&mut self.out);
+            self.emit_stamps(&insts)?;
+            c.push_str(&self.out);
+            self.out = saved;
+            writeln!(c).unwrap();
+            // module string pool
+            let mut pool: HashMap<String, String> = HashMap::new();
+            let mut pool_order: Vec<String> = Vec::new();
+            collect_strs(&u.module, &mut pool, &mut pool_order);
+            for (i, _t) in pool_order.iter().enumerate() {
+                writeln!(c, "static fang_str* L{};", i).unwrap();
+            }
+            writeln!(
+                c,
+                "static void fang_init_strings_{m}(void) {{",
+                m = mname
+            )
+            .unwrap();
+            for (i, text) in pool_order.iter().enumerate() {
+                writeln!(
+                    c,
+                    "    L{i} = fang_str_new(\"{text}\", {len}); L{i}->rc = FANG_RC_STATIC;",
+                    i = i,
+                    text = c_escape(text),
+                    len = text.chars().count()
+                )
+                .unwrap();
+            }
+            writeln!(c, "}}").unwrap();
+            // global definitions
+            let mut has_globals = false;
+            for item in &u.module.items {
+                if let Item::Const { name, .. } = item {
+                    let gm = format!("g_{}_{}", mname, name);
+                    if let Some(ty) = self.a.globals.get(&gm) {
+                        writeln!(c, "{} {};", self.ctype(ty), gm).unwrap();
+                        has_globals = true;
+                    }
+                }
+            }
+            if has_globals {
+                writeln!(c).unwrap();
+            }
+            // bodies
+            let saved = std::mem::take(&mut self.out);
+            *self.extra_decls.borrow_mut() = String::new();
+            *self.extra_fns.borrow_mut() = String::new();
+            *self.stamped_sigs.borrow_mut() = HashSet::new();
+            self.pool = pool.clone();
+            self.pool_order = pool_order.clone();
+            self.fns_external = true;
+            for item in &u.module.items {
+                if let Item::Fn(f) = item {
+                    let mangled = match &f.receiver {
+                        Some(r) => format!("f_{}_{}_{}", u.name, r, f.name),
+                        None => format!("f_{}_{}", u.name, f.name),
+                    };
+                    let fi = self.a.fns[&mangled].clone();
+                    self.emit_fn(u, f, &fi);
+                }
+            }
+            self.fns_external = false;
+            let extra_d = self.extra_decls.borrow().clone();
+            let extra_f = self.extra_fns.borrow().clone();
+            let extras = format!("{}{}", extra_d, extra_f);
+            let bodies = std::mem::replace(&mut self.out, saved);
+            c.push_str(&extras);
+            writeln!(c).unwrap();
+            c.push_str(&bodies);
+            writeln!(c).unwrap();
+            // Module init: strings, then one init function per global
+            // (separate functions keep temp names scoped).
+            let mut ginit_calls = String::new();
+            for item in &u.module.items {
+                if let Item::Const { name, value, .. } = item {
+                    let gm = format!("g_{}_{}", mname, name);
+                    if self.a.globals.contains_key(&gm) {
+                        let mut body = String::new();
+                        let path = u.path.clone();
+                        let mut fg = FnGen {
+                            module: mname.clone(),
+                            path,
+                            a: self.a,
+                            captures: HashMap::new(),
+                            buf: String::new(),
+                            indent: 1,
+                            scopes: vec![HashMap::new()],
+                            frame: String::new(),
+                            field_n: 0,
+                            temp_n: 0,
+                            locals: Vec::new(),
+                            has_temps: Vec::new(),
+                            ret: Ty::Void,
+                        };
+                        let ty = self.a.globals.get(&gm).cloned().unwrap_or(Ty::Err);
+                        let (code, _t, fresh) = fg.gen_expr(value, self);
+                        let assign = if self.is_rc(&ty) {
+                            let incref = if fresh { String::new() } else {
+                                format!("fang_incref((void*)({}));", code)
+                            };
+                            format!("{} = {};\n    {}", gm, code, incref)
+                        } else {
+                            format!("{} = {};", gm, code)
+                        };
+                        fg.w(&assign);
+                        fg.flush_temps(self);
+                        body.push_str(&fg.buf);
+                        writeln!(
+                            c,
+                            "void fang_ginit_{m}_{n}(void) {{\n{b}\n}}",
+                            m = mname,
+                            n = name,
+                            b = body
+                        )
+                        .unwrap();
+                        ginit_calls
+                            .push_str(&format!("    fang_ginit_{}_{}();\n", mname, name));
+                    }
+                }
+            }
+            writeln!(c, "void fang_ginit_{m}(void) {{", m = mname).unwrap();
+            writeln!(c, "    fang_init_strings_{m}();", m = mname).unwrap();
+            c.push_str(&ginit_calls);
+            writeln!(c, "}}").unwrap();
+            mods.push(ModUnit {
+                module: mname.clone(),
+                c,
+                h,
+            });
+        }
+
+        // Entry TU.
+        let eu = self.sources.iter().find(|u| u.name == entry).unwrap();
+        let mut c = String::new();
+        writeln!(c, "/* generated by fang; do not edit */").unwrap();
+        writeln!(c, "#include \"fang_rt.h\"").unwrap();
+        for mname in &order {
+            if mname != entry {
+                writeln!(c, "#include \"fang_mod_{m}.h\"", m = mname).unwrap();
+            }
+        }
+        // entry extern headers
+        let mut mheaders: BTreeSet<String> = BTreeSet::new();
+        for item in &eu.module.items {
+            if let Item::ExternFn { header, .. } = item {
+                let ht = header.trim();
+                if !ht.is_empty()
+                    && ht.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-'))
+                {
+                    mheaders.insert(ht.to_string());
+                }
+            }
+        }
+        for hh in &mheaders {
+            writeln!(c, "#include <{}>", hh).unwrap();
+        }
+        writeln!(c).unwrap();
+        let e_insts = self.module_insts(entry);
+        let saved = std::mem::take(&mut self.out);
+        self.emit_forward_typedefs(&e_insts);
+        c.push_str(&self.out);
+        self.out = saved;
+        writeln!(c).unwrap();
+        // entry-owned struct defs (inline like the single-TU path)
+        let saved = std::mem::take(&mut self.out);
+        let mut owned: Vec<String> = self
+            .a
+            .structs
+            .values()
+            .filter(|si| si.module == entry)
+            .map(|si| si.mangled.clone())
+            .collect();
+        owned.sort();
+        for mangled in &owned {
+            self.emit_struct_def(mangled);
+        }
+        c.push_str(&self.out);
+        self.out = saved;
+        writeln!(c).unwrap();
+        let saved = std::mem::take(&mut self.out);
+        self.emit_stamps(&e_insts)?;
+        c.push_str(&self.out);
+        self.out = saved;
+        writeln!(c).unwrap();
+        // entry pool
+        let mut pool: HashMap<String, String> = HashMap::new();
+        let mut pool_order: Vec<String> = Vec::new();
+        collect_strs(&eu.module, &mut pool, &mut pool_order);
+        for (i, _t) in pool_order.iter().enumerate() {
+            writeln!(c, "static fang_str* L{};", i).unwrap();
+        }
+        writeln!(c, "static void fang_init_strings_{e}(void) {{", e = entry).unwrap();
+        for (i, text) in pool_order.iter().enumerate() {
+            writeln!(
+                c,
+                "    L{i} = fang_str_new(\"{text}\", {len}); L{i}->rc = FANG_RC_STATIC;",
+                i = i,
+                text = c_escape(text),
+                len = text.chars().count()
+            )
+            .unwrap();
+        }
+        writeln!(c, "}}").unwrap();
+        // entry globals
+        let mut has_globals = false;
+        for item in &eu.module.items {
+            if let Item::Const { name, .. } = item {
+                let gm = format!("g_{}_{}", entry, name);
+                if let Some(ty) = self.a.globals.get(&gm) {
+                    writeln!(c, "static {} {};", self.ctype(ty), gm).unwrap();
+                    has_globals = true;
+                }
+            }
+        }
+        if has_globals {
+            writeln!(c).unwrap();
+        }
+        // entry prototypes
+        let mut entry_fns: Vec<&crate::sema::FnInfo> = self
+            .a
+            .fns
+            .values()
+            .filter(|fi| fi.module == entry && !fi.is_extern)
+            .collect();
+        entry_fns.sort_by(|x, y| x.mangled.cmp(&y.mangled));
+        for fi in entry_fns {
+            let params = self.fn_params(fi);
+            let ret = self.ctype_ret(&fi.ret);
+            writeln!(c, "static {} {}({});", ret, fi.mangled, params).unwrap();
+        }
+        writeln!(c).unwrap();
+        // entry bodies + extras
+        let saved = std::mem::take(&mut self.out);
+        *self.extra_decls.borrow_mut() = String::new();
+        *self.extra_fns.borrow_mut() = String::new();
+        *self.stamped_sigs.borrow_mut() = HashSet::new();
+        self.pool = pool.clone();
+        self.pool_order = pool_order.clone();
+        for item in &eu.module.items {
+            if let Item::Fn(f) = item {
+                let mangled = match &f.receiver {
+                    Some(r) => format!("f_{}_{}_{}", eu.name, r, f.name),
+                    None => format!("f_{}_{}", eu.name, f.name),
+                };
+                let fi = self.a.fns[&mangled].clone();
+                self.emit_fn(eu, f, &fi);
+            }
+        }
+        let extra_d = self.extra_decls.borrow().clone();
+        let extra_f = self.extra_fns.borrow().clone();
+        let extras = format!("{}{}", extra_d, extra_f);
+        let bodies = std::mem::replace(&mut self.out, saved);
+        c.push_str(&extras);
+        writeln!(c).unwrap();
+        c.push_str(&bodies);
+        writeln!(c).unwrap();
+        // entry globals init: one function per global
+        let mut entry_ginit_calls = String::new();
+        for item in &eu.module.items {
+            if let Item::Const { name, value, .. } = item {
+                let gm = format!("g_{}_{}", entry, name);
+                if self.a.globals.contains_key(&gm) {
+                    let mut body = String::new();
+                    let path = eu.path.clone();
+                    let mut fg = FnGen {
+                        module: entry.to_string(),
+                        path,
+                        a: self.a,
+                        captures: HashMap::new(),
+                        buf: String::new(),
+                        indent: 1,
+                        scopes: vec![HashMap::new()],
+                        frame: String::new(),
+                        field_n: 0,
+                        temp_n: 0,
+                        locals: Vec::new(),
+                        has_temps: Vec::new(),
+                        ret: Ty::Void,
+                    };
+                    let ty = self.a.globals.get(&gm).cloned().unwrap_or(Ty::Err);
+                    let (code, _t, fresh) = fg.gen_expr(value, self);
+                    let assign = if self.is_rc(&ty) {
+                        let incref = if fresh { String::new() } else {
+                            format!("fang_incref((void*)({}));", code)
+                        };
+                        format!("{} = {};\n    {}", gm, code, incref)
+                    } else {
+                        format!("{} = {};", gm, code)
+                    };
+                    fg.w(&assign);
+                    fg.flush_temps(self);
+                    body.push_str(&fg.buf);
+                    writeln!(
+                        c,
+                        "static void fang_ginit_{e}_{n}(void) {{\n{b}\n}}",
+                        e = entry,
+                        n = name,
+                        b = body
+                    )
+                    .unwrap();
+                    entry_ginit_calls
+                        .push_str(&format!("    fang_ginit_{}_{}();\n", entry, name));
+                }
+            }
+        }
+        if has_globals {
+            writeln!(c, "static void fang_ginit_{e}(void) {{", e = entry).unwrap();
+            c.push_str(&entry_ginit_calls);
+            writeln!(c, "}}").unwrap();
+        }
+        // main
+        writeln!(
+            c,
+            "int main(int argc, char** argv) {{\n    fang_os_init(argc, argv);\n    fang_init_strings_{e}();",
+            e = entry
+        )
+        .unwrap();
+        for mname in &order {
+            if mname != entry {
+                writeln!(c, "    fang_ginit_{m}();", m = mname).unwrap();
+            }
+        }
+        if has_globals {
+            writeln!(c, "    fang_ginit_{e}();", e = entry).unwrap();
+        }
+        writeln!(c, "    f_{e}_main();\n    return 0;\n}}", e = entry).unwrap();
+
+        Ok(Program {
+            mods,
+            entry_c: c,
+            ginit_order: order,
+        })
+    }
+
     fn run(&mut self, entry: &str) -> Result<String, String> {
         // Dead-module elimination: BFS over imports AND recorded call
         // edges from the entry. Method sugar (`s.find(..)`) resolves to
@@ -739,11 +1626,10 @@ impl<'a> Gen<'a> {
                         work.push((**v).clone());
                     }
                 }
-                Ty::Tuple(a, b)
-                    if out.insert(t.clone()) => {
-                        work.push((**a).clone());
-                        work.push((**b).clone());
-                    }
+                Ty::Tuple(a, b) if out.insert(t.clone()) => {
+                    work.push((**a).clone());
+                    work.push((**b).clone());
+                }
                 _ => {}
             }
         }
@@ -836,9 +1722,10 @@ impl<'a> Gen<'a> {
         } else {
             " = {0}".to_string()
         };
+        let linkage = if self.fns_external { "" } else { "static " };
         writeln!(
             self.out,
-            "static {} {}({}) {{\n{}    struct {{\n{}    }} f{};\n{}__exit: ;\n{}{}}}",
+            "{linkage}{} {}({}) {{\n{}    struct {{\n{}    }} f{};\n{}__exit: ;\n{}{}}}",
             ret,
             fi.mangled,
             params,

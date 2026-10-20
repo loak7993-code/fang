@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.4.0] - 2026-10-20
+
+Incremental compilation: modules compile once, programs link them.
+
+### Added
+
+- Per-module compilation units with content-hash object caching.
+  A module's generated C is identical across every program that
+  imports it, so its object file is compiled once and reused. Only
+  the entry module compiles on every build. Stale modules compile
+  in parallel.
+  - website (imports server, json, str, ...): 810 ms -> 91 ms
+  - fib (no imports): 103 ms
+  - cold start: 61 ms (python3 on the same script: 35 ms)
+  - first build of a module set pays one compile, then cached
+- Module headers: struct definitions, function prototypes, and
+  extern globals are emitted as real C headers per module.
+- Deterministic codegen: module C is byte-identical across compiler
+  runs (sorted emission everywhere), which is what makes the object
+  cache sound.
+- REPL no longer double-wraps `print(...)` inputs.
+
+### Notes
+
+- The single-TU path remains for `--freestanding` and `--python`.
+- Entry modules pay their own -O3 compile (chip8's 450 lines: ~390
+  ms); that is the user's code, not the stdlib.
+
 ## [1.3.2] - 2026-10-20
 
 Compiles at rustc parity.

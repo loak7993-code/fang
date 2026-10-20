@@ -222,6 +222,183 @@ fn cached_rt_object(release: bool) -> Result<PathBuf, String> {
     Ok(obj)
 }
 
+/// Incremental compilation: each module's C is content-stable across
+/// programs, so its object file is cached by hash. Only the entry TU
+/// is compiled on every build. Module objects compile in parallel.
+fn compile_program_modular(
+    units: &[SourceUnit],
+    a: &Analysis,
+    entry: &str,
+    flags: &BuildFlags,
+    tag: &str,
+) -> Result<Compiled, String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let opts = fang_core::codegen::GenOpts {
+        freestanding: false,
+    };
+    let program = fang_core::codegen::generate_modular(units, a, entry, &opts)?;
+
+    let build_dir = std::env::temp_dir().join(format!("fang-build-{}", tag));
+    std::fs::create_dir_all(&build_dir).map_err(|e| format!("cannot create build dir: {}", e))?;
+    let mod_cache = std::env::temp_dir().join("fang-mod-cache");
+    std::fs::create_dir_all(&mod_cache).map_err(|e| format!("cannot create module cache: {}", e))?;
+
+    let cc_version = output_of("cc", &["--version"]).unwrap_or_default();
+    let opt = if flags.release { "-O3" } else { "-O0" };
+
+    // Materialize every module: header next to a hashed C, object cached.
+    struct ModObj {
+        module: String,
+        obj: PathBuf,
+    }
+    let mut mod_objs: Vec<ModObj> = Vec::new();
+    let mut stale: Vec<(String, PathBuf, PathBuf)> = Vec::new(); // (module, c path, obj path)
+
+    for m in &program.mods {
+        let mut h = DefaultHasher::new();
+        m.c.hash(&mut h);
+        m.h.hash(&mut h);
+        cc_version.hash(&mut h);
+        opt.hash(&mut h);
+        let key = format!("{:016x}", h.finish());
+
+        let mdir = mod_cache.join(&key);
+        let hdr_path = mdir.join(format!("fang_mod_{}.h", m.module));
+        let c_path = mdir.join(format!("fang_mod_{}.c", m.module));
+        let obj_path = mdir.join(format!("fang_mod_{}.o", m.module));
+        std::fs::create_dir_all(&mdir).map_err(|e| e.to_string())?;
+        let needs_build = !obj_path.exists()
+            || std::fs::read_to_string(&c_path).unwrap_or_default() != m.c;
+        std::fs::write(&hdr_path, &m.h).map_err(|e| e.to_string())?;
+        std::fs::write(&c_path, &m.c).map_err(|e| e.to_string())?;
+        std::fs::write(mdir.join("fang_rt.h"), RT_H).map_err(|e| e.to_string())?;
+        if needs_build {
+            stale.push((m.module.clone(), c_path, obj_path.clone()));
+        }
+        mod_objs.push(ModObj {
+            module: m.module.clone(),
+            obj: obj_path,
+        });
+    }
+
+    // Compile stale modules in parallel.
+    let march = flags.release;
+    {
+        // Every module's cache dir: headers resolve from any of them.
+        let all_dirs: Vec<PathBuf> = mod_objs
+            .iter()
+            .map(|mo| mo.obj.parent().unwrap().to_path_buf())
+            .collect();
+        let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = stale
+                .iter()
+                .map(|(module, c_path, obj_path)| {
+                    let all_dirs = all_dirs.clone();
+                    scope.spawn(move || {
+                        let mut cmd = Command::new("cc");
+                        cmd.arg(opt).arg("-std=c11").arg("-c");
+                        if march {
+                            cmd.arg("-march=native");
+                        }
+                        for d in &all_dirs {
+                            cmd.arg("-I").arg(d);
+                        }
+                        cmd.arg(c_path)
+                            .arg("-o")
+                            .arg(obj_path);
+                        let st = cmd
+                            .status()
+                            .map_err(|e| format!("module '{}': cannot run cc: {}", module, e))?;
+                        if !st.success() {
+                            return Err(format!("module '{}' failed to compile", module));
+                        }
+                        Ok(())
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for r in results {
+            r?;
+        }
+    }
+
+    // Entry TU: fresh compile with module headers on the include path.
+    let entry_dir = build_dir.join("entry");
+    std::fs::create_dir_all(&entry_dir).map_err(|e| e.to_string())?;
+    let entry_c = entry_dir.join("program.c");
+    std::fs::write(&entry_c, &program.entry_c).map_err(|e| e.to_string())?;
+    std::fs::write(entry_dir.join("fang_rt.h"), RT_H).map_err(|e| e.to_string())?;
+    if flags.keep_c {
+        if let Some(dir) = Path::new(&units.last().unwrap().path).parent() {
+            let _ = std::fs::write(dir.join("program.fang.c"), &program.entry_c);
+            for m in &program.mods {
+                let _ = std::fs::write(
+                    dir.join(format!("program.{}.fang.c", m.module)),
+                    &m.c,
+                );
+            }
+        }
+    }
+
+    let out_name = flags.output.clone().unwrap_or_else(|| {
+        let stem = Path::new(&units.last().unwrap().path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("program")
+            .to_string();
+        format!("{}.bin", stem)
+    });
+    let binary = build_dir.join(&out_name);
+
+    let mut cmd = Command::new("cc");
+    cmd.arg(opt)
+        .arg("-std=c11")
+        .arg("-I").arg(&entry_dir);
+    // The module headers live in each module's cache dir; symlink or
+    // copy them beside the entry TU so `#include "fang_mod_x.h"` resolves.
+    for mo in &mod_objs {
+        let src = mo.obj.parent().unwrap().join(format!("fang_mod_{}.h", mo.module));
+        let dst = entry_dir.join(format!("fang_mod_{}.h", mo.module));
+        let _ = std::fs::copy(&src, &dst);
+    }
+    for p in mod_cache_ancestors(&program, &mod_cache) {
+        cmd.arg("-I").arg(p);
+    }
+    if flags.release {
+        cmd.arg("-march=native");
+    }
+    cmd.arg(&entry_c);
+    cmd.arg("-o").arg(&binary);
+    cmd.arg(cached_rt_object(flags.release)?);
+    for mo in &mod_objs {
+        cmd.arg(&mo.obj);
+    }
+    cmd.arg("-lm");
+    let status = cmd
+        .status()
+        .map_err(|e| format!("cannot run cc: {}. Is a C compiler installed?", e))?;
+    if !status.success() {
+        return Err("C compilation failed".to_string());
+    }
+    Ok(Compiled { binary })
+}
+
+/// Include dirs that hold the module headers.
+fn mod_cache_ancestors(
+    program: &fang_core::codegen::Program,
+    mod_cache: &Path,
+) -> Vec<PathBuf> {
+    // Each module lives in mod_cache/<hash>/; return every dir.
+    let mut out: Vec<PathBuf> = Vec::new();
+    for _ in &program.mods {
+        out.push(mod_cache.to_path_buf());
+    }
+    out
+}
+
 /// Std units parsed once per program build. The Python bridge module
 /// is excluded: it carries externs that need libpython, so it loads
 /// only when explicitly imported.
@@ -410,6 +587,9 @@ fn compile_program(
     flags: &BuildFlags,
     tag: &str,
 ) -> Result<Compiled, String> {
+    if !flags.freestanding && !flags.python {
+        return compile_program_modular(units, a, entry, flags, tag);
+    }
     let opts = GenOpts {
         freestanding: flags.freestanding,
     };
@@ -749,6 +929,11 @@ fn cmd_repl() -> ExitCode {
             session.stmts.push_str("  ");
             session.stmts.push_str(line);
             session.stmts.push('\n');
+        } else if trimmed_starts_call(line, "print") {
+            // Already a print: run it as-is, no echo wrapper.
+            session.stmts.push_str("  ");
+            session.stmts.push_str(line);
+            session.stmts.push('\n');
         } else {
             // Bare expression: echo its value.
             session.stmts.push_str(&format!("  print({})\n", line));
@@ -781,6 +966,17 @@ fn cmd_repl() -> ExitCode {
     }
     println!("bye");
     ExitCode::SUCCESS
+}
+
+/// Does a line start with a call to name(...)?
+fn trimmed_starts_call(line: &str, name: &str) -> bool {
+    let t = line.trim_start();
+    if let Some(rest) = t.strip_prefix(name) {
+        // "print(" but not "printf(" for name "print": the char
+        // right after the name must be the open paren.
+        return rest.starts_with('(');
+    }
+    false
 }
 
 fn drop_last_lines(s: &str, n: usize) -> String {
