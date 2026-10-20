@@ -30,6 +30,7 @@ pub fn generate(
 ) -> Result<String, String> {
     let mut g = Gen {
         sources,
+        reachable: HashSet::new(),
         a,
         opts,
         out: String::new(),
@@ -46,6 +47,9 @@ pub fn generate(
 
 struct Gen<'a> {
     sources: &'a [SourceUnit],
+    /// Modules reachable from the entry through imports. Only these
+    /// are emitted; the rest of the embedded stdlib is dropped.
+    reachable: HashSet<String>,
     a: &'a Analysis,
     opts: &'a GenOpts,
     out: String,
@@ -63,8 +67,51 @@ struct Gen<'a> {
 
 impl<'a> Gen<'a> {
     fn run(&mut self, entry: &str) -> Result<String, String> {
+        // Dead-module elimination: BFS over imports AND recorded call
+        // edges from the entry. Method sugar (`s.find(..)`) resolves to
+        // str-module functions without an import, so the call map is
+        // needed too. Only reachable modules are emitted.
+        let mut reach = HashSet::new();
+        let mut queue = vec![entry.to_string()];
+        while let Some(m) = queue.pop() {
+            if !reach.insert(m.clone()) {
+                continue;
+            }
+            if let Some(imports) = self.a.imports.get(&m) {
+                for im in imports {
+                    queue.push(im.clone());
+                }
+            }
+            for ((cm, _), target) in &self.a.call {
+                if cm != &m {
+                    continue;
+                }
+                let callee_module = match target {
+                    crate::sema::CallTarget::Fn(mangled)
+                    | crate::sema::CallTarget::FnSelf(mangled) => {
+                        self.a.fns.get(mangled).map(|fi| fi.module.clone())
+                    }
+                    crate::sema::CallTarget::StructNew(mangled) => self
+                        .a
+                        .structs
+                        .get(mangled)
+                        .map(|si| si.module.clone()),
+                    _ => None,
+                };
+                if let Some(cm2) = callee_module {
+                    if !reach.contains(&cm2) {
+                        queue.push(cm2);
+                    }
+                }
+            }
+        }
+        self.reachable = reach;
+
         // Collect extern headers (sanitized) and pooled strings.
         for u in self.sources {
+            if !self.reachable.contains(&u.name) {
+                continue;
+            }
             for item in &u.module.items {
                 if let Item::ExternFn { header, .. } = item {
                     let h = header.trim();
@@ -137,6 +184,15 @@ impl<'a> Gen<'a> {
         // Module-level mutable globals: declared at file scope,
         // initialized by __fang_globals_init before main runs.
         for (gm, ty) in &self.a.globals {
+            if let Some(m) = gm.strip_prefix("g_") {
+                if !self
+                    .reachable
+                    .iter()
+                    .any(|r| m.starts_with(&format!("{}_", r)))
+                {
+                    continue;
+                }
+            }
             writeln!(self.out, "static {} {};", self.ctype(ty), gm).unwrap();
         }
         if !self.a.globals.is_empty() {
@@ -146,6 +202,15 @@ impl<'a> Gen<'a> {
         // Struct definitions, dependency ordered.
         let order = struct_order(self.a);
         for mangled in &order {
+            let m = self
+                .a
+                .structs
+                .get(mangled)
+                .map(|si| si.module.clone())
+                .unwrap_or_default();
+            if !self.reachable.contains(&m) {
+                continue;
+            }
             self.emit_struct_def(mangled);
         }
         writeln!(self.out).unwrap();
@@ -206,7 +271,12 @@ impl<'a> Gen<'a> {
         }
 
         // Prototypes.
-        let mut fn_order: Vec<&crate::sema::FnInfo> = self.a.fns.values().collect();
+        let mut fn_order: Vec<&crate::sema::FnInfo> = self
+            .a
+            .fns
+            .values()
+            .filter(|fi| self.reachable.contains(&fi.module))
+            .collect();
         fn_order.sort_by(|x, y| x.mangled.cmp(&y.mangled));
         for fi in &fn_order {
             if fi.is_extern {
@@ -222,6 +292,9 @@ impl<'a> Gen<'a> {
 
         // Bodies.
         for u in self.sources {
+            if !self.reachable.contains(&u.name) {
+                continue;
+            }
             for item in &u.module.items {
                 if let Item::Fn(f) = item {
                     let mangled = match &f.receiver {
@@ -249,6 +322,9 @@ impl<'a> Gen<'a> {
             let mut jobs: Vec<(String, String, Expr)> = Vec::new();
             for u in self.sources {
                 let mname = &u.name;
+                if !self.reachable.contains(mname) {
+                    continue;
+                }
                 for item in &u.module.items {
                     if let Item::Const { name, value, .. } = item {
                         let gm = format!("g_{}_{}", mname, name);
@@ -303,6 +379,9 @@ impl<'a> Gen<'a> {
             writeln!(self.out, "static void __fang_globals_init(void) {{").unwrap();
             for u in self.sources {
                 let mname = &u.name;
+                if !self.reachable.contains(mname) {
+                    continue;
+                }
                 for item in &u.module.items {
                     if let Item::Const { name, .. } = item {
                         let gm = format!("g_{}_{}", mname, name);
@@ -596,17 +675,29 @@ impl<'a> Gen<'a> {
         let mut out: BTreeSet<Ty> = BTreeSet::new();
         let mut work: Vec<Ty> = Vec::new();
         for fi in self.a.fns.values() {
+            if !self.reachable.contains(&fi.module) {
+                continue;
+            }
             for p in &fi.params {
                 work.push(p.ty.clone());
             }
             work.push(fi.ret.clone());
         }
         for si in self.a.structs.values() {
+            if !self.reachable.contains(&si.module) {
+                continue;
+            }
             for (_, t) in &si.fields {
                 work.push(t.clone());
             }
         }
-        work.extend(self.a.ty.values().cloned());
+        work.extend(
+            self.a
+                .ty
+                .iter()
+                .filter(|((m, _), _)| self.reachable.contains(m.as_str()))
+                .map(|(_, t)| t.clone()),
+        );
         for v in self.a.for_binders.values() {
             work.extend(v.iter().cloned());
         }
