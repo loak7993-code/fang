@@ -4,6 +4,20 @@ All notable changes to Leo are documented here. The format follows
 [keep a changelog](https://keepachangelog.com/); versions follow
 semantic versioning.
 
+## [0.2.2] - 2026-10-20
+
+### Added
+
+- `leo learn`: an eight-lesson interactive terminal course for people
+  with zero programming experience. Each lesson explains a concept in
+  plain language, has the learner fill in a blank in a real program,
+  compiles and runs it, and checks the output. Wrong answers show the
+  actual output or compile error plus hints. Progress saves between
+  sessions; `leo learn list` and `leo learn reset` manage it.
+- `leo new <name>`: scaffold a starter project.
+- `tools/check_learn_cmd.sh`: drives the course end to end in CI,
+  including rejecting wrong answers.
+
 ## [0.2.1] - 2026-10-20
 
 ### Added

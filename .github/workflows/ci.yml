@@ -20,5 +20,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Learn examples run
         run: LEO=./target/release/leo bash tools/check_learn.sh
+      - name: Learn course check
+        run: LEO=./target/release/leo bash tools/check_learn_cmd.sh
       - name: Benchmarks compile and run
         run: LEO=./target/release/leo bash bench/run.sh

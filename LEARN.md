@@ -1,8 +1,13 @@
 # Learn Leo in 15 minutes
 
+Never programmed before? Run `leo learn` first: it is an interactive
+course in your terminal that starts from zero and checks every answer.
+Then come back here for the full language.
+
 Leo reads like Python and runs as native code. This tutorial covers the
 whole language. Type the examples into a file called `intro.leo` and run
-them with `leo run intro.leo` as you go.
+them with `leo run intro.leo` as you go. You can also paste single lines
+into `leo repl` and see them run immediately.
 
 Every example below runs exactly as printed.
 

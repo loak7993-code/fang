@@ -9,11 +9,18 @@
 A small compiled language you can learn in an afternoon and ship
 anywhere C ships: servers, CLI tools, kernels, desktop, embedded.
 
-[Learn it in 15 minutes](LEARN.md) · [Language spec](SPEC.md) · [Standard library](STDLIB.md)
+[Never coded? `leo learn`](LEARN.md) · [15-minute tutorial](LEARN.md) · [Spec](SPEC.md) · [Stdlib](STDLIB.md)
 
 </div>
 
 ---
+
+## Start from zero
+
+```sh
+leo learn      # interactive course, no experience needed
+leo new demo   # starter project
+```
 
 ## Why Leo
 

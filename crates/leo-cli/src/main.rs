@@ -18,11 +18,15 @@ COMMANDS:
     build <file.leo> [--release] [-o name] [--freestanding] [--target TRIPLE]
                           produce a standalone native binary
     repl                  interactive session (replays the session each input)
+    learn                 interactive course, starts you from zero
+    new <name>            create a starter project
     fmt <files...>        format source files in the canonical style
     test [dir]            discover and run *_test.leo files
     add <repo>            install a package from a git repository
     version               print the version
     help                  print this help
+
+New to programming? Start with:  leo learn
 
 The toolchain needs cc (gcc or clang) on PATH.
 
@@ -65,6 +69,8 @@ static STD_MODULES: &[(&str, &str)] = &[
 
 use std::collections::HashMap;
 
+mod learn;
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str).unwrap_or("help") {
@@ -82,6 +88,8 @@ fn main() -> ExitCode {
         "repl" => cmd_repl(),
         "test" => cmd_test(&args[1..]),
         "add" => cmd_add(&args[1..]),
+        "learn" => learn::cmd_learn(&args[1..]),
+        "new" => learn::cmd_new(&args[1..]),
         cmd => {
             eprintln!("leo: unknown or unfinished command '{}'", cmd);
             eprint!("{}", USAGE);
