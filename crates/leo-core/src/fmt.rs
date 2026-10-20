@@ -142,6 +142,11 @@ fn write_stmt(out: &mut String, st: &Stmt, pad: &str) {
             write_expr(out, value, 0);
             out.push('\n');
         }
+        StmtKind::TypedAssign { name, ann, value } => {
+            out.push_str(&format!("{}{}: {} = ", pad, name, ann));
+            write_expr(out, value, 0);
+            out.push('\n');
+        }
         StmtKind::Assign { target, value } => {
             out.push_str(pad);
             write_lvalue(out, target);

@@ -4,6 +4,41 @@ All notable changes to Leo are documented here. The format follows
 [keep a changelog](https://keepachangelog.com/); versions follow
 semantic versioning.
 
+## [0.3.1] - 2026-10-20
+
+### Fixed (found in a dedicated bug hunt)
+
+- Closure environments emitted an invalid C statement (missing
+  semicolon) whenever a lambda captured a list, dict, or string: any
+  such program failed to compile.
+- Calls through zero-argument closures emitted a trailing comma:
+  `f(c, )` instead of `f(c)`.
+- Lambda parameters written without types inferred to int always,
+  even when the body used them as strings (`prefix + name`).
+  Parameter inference now runs inside function expressions, using
+  literals, string methods, the declared return type, and known
+  enclosing locals as constraints.
+- `x, y = pair()` silently assigned zeros when `x` or `y` were new
+  names: tuple assignment now declares missing targets with their
+  part types.
+- A multi-line function expression as the right side of an assignment
+  (`risky = fn(n): ...`) consumed the statement's line terminator and
+  failed to parse whatever came next.
+- A `try`/`except` where both arms return was misreported as "not
+  every path returns a value".
+- Two lambdas with the same signature could not share a list
+  (`list elements disagree: fn then fn`): function types now compare
+  by signature.
+- `d: dict[str, int] = {}` did not parse on bare assignment, leaving
+  no way to annotate an empty collection without `let`. Typed
+  assignment now works everywhere, and annotates empty collection
+  literals.
+- `str(x)` did not exist: converting a number or collection to a
+  string required f-strings. It is now a builtin.
+- Lambdas passed to `map`, `filter`, and `reduce` had their inferred
+  signatures checked before the call could supply the expected types;
+  they now adapt to the higher-order call site before failing.
+
 ## [0.3.0] - 2026-10-20
 
 Simpler than Python for getting started.

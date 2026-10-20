@@ -30,11 +30,14 @@ fn tok_span(t: &Token) -> Span {
 pub struct Parser<'a> {
     toks: &'a [Token],
     pos: usize,
+    /// Set when an expression just consumed an indented block (a
+    /// function expression); the statement's own line already ended.
+    just_finished_fnblock: bool,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(toks: &'a [Token]) -> Self {
-        Parser { toks, pos: 0 }
+        Parser { toks, pos: 0, just_finished_fnblock: false }
     }
 
     pub fn parse_module(name: &str, toks: &[Token]) -> PResult<Module> {
@@ -97,6 +100,10 @@ impl<'a> Parser<'a> {
     /// End a simple statement. A trailing comment is left in the stream to
     /// become the following statement on its own line.
     fn finish_line(&mut self) -> PResult<()> {
+        if self.just_finished_fnblock {
+            self.just_finished_fnblock = false;
+            return Ok(());
+        }
         if self.at_comment() {
             return Ok(());
         }
@@ -314,7 +321,9 @@ impl<'a> Parser<'a> {
     fn inline_or_block(&mut self) -> PResult<Block> {
         self.expect(&Colon, "':'")?;
         if self.at(&Newline) {
-            return self.block_body();
+            let b = self.block_body()?;
+            self.just_finished_fnblock = true;
+            return Ok(b);
         }
         if self.at(&Return) {
             let t = self.advance();
@@ -555,6 +564,26 @@ impl<'a> Parser<'a> {
             _ => {}
         }
 
+        // Typed assignment: name: type = value (auto-declare with an
+        // explicit type, the only way to annotate an empty collection).
+        if let TokKind::Ident(_) = self.peek_kind() {
+            if self.toks.get(self.pos + 1).map(|t| &t.kind) == Some(&Colon) {
+                let (name, _) = self.ident_tok("a name")?;
+                self.advance(); // :
+                let ty = self.parse_type()?;
+                self.expect(&Eq, "'='")?;
+                let rhs = self.expr()?;
+                self.finish_line()?;
+                return Ok(Stmt {
+                    kind: StmtKind::TypedAssign {
+                        name,
+                        ann: ty,
+                        value: rhs,
+                    },
+                    span: tok_span(&t),
+                });
+            }
+        }
         // Expression statement or assignment.
         let value = self.expr()?;
         // Tuple assignment: a, b = rhs

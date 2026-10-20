@@ -158,6 +158,8 @@ pub enum StmtKind {
     Assign { target: LValue, value: Expr },
     /// a, b = rhs (tuple assignment and swap)
     AssignMulti { targets: Vec<LValue>, value: Expr },
+    /// name: type = value (auto-declare with an explicit type)
+    TypedAssign { name: String, ann: Type, value: Expr },
     Return(Option<Expr>),
     If {
         cond: Expr,

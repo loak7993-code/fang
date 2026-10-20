@@ -778,6 +778,31 @@ impl<'a> FnGen<'a> {
                 }
                 self.flush_temps(g);
             }
+            StmtKind::TypedAssign { name, ann: _, value } => {
+                self.line_of(st);
+                let vt = self.a.ty[&(self.module.clone(), value.span.start)].clone();
+                let (code, _t, fresh) = self.gen_expr(value, g);
+                if self.lookup(name).is_none() {
+                    self.declare(name, vt.clone(), g);
+                }
+                let field = self.lookup(name).unwrap().field.clone();
+                match &vt {
+                    Ty::Struct(m) => {
+                        self.w(&format!("f.{} = {};", field, code));
+                        for si in g.struct_field_incref(&format!("f.{}", field), m) {
+                            self.w(&si);
+                        }
+                    }
+                    t if g.is_rc(t) => {
+                        self.w(&format!("f.{} = {};", field, code));
+                        if !fresh {
+                            self.w(&format!("leo_incref((void*)(f.{}));", field));
+                        }
+                    }
+                    _ => self.w(&format!("f.{} = {};", field, code)),
+                }
+                self.flush_temps(g);
+            }
             StmtKind::AssignMulti { targets, value } => {
                 self.line_of(st);
                 let vt = self.a.ty[&(self.module.clone(), value.span.start)].clone();
@@ -806,6 +831,10 @@ impl<'a> FnGen<'a> {
                         (bt.clone(), format!("{}.b", tmp))
                     };
                     if let LValue::Ident(n) = t {
+                        // New names auto-declare with their part type.
+                        if self.lookup(n).is_none() {
+                            self.declare(n, part_ty.clone(), g);
+                        }
                         let v = self.lookup(n).cloned();
                         if let Some(v) = v {
                             let field = v.field.clone();
@@ -1719,7 +1748,7 @@ impl<'a> FnGen<'a> {
                     if g.is_rc(ct) {
                         env_dec.push_str(&format!(
                             "    {}\n",
-                            g.decref_stmt(&format!("e->cap_{}", i), ct).replace(";", "")
+                            g.decref_stmt(&format!("e->cap_{}", i), ct)
                         ));
                     }
                 }
@@ -2292,6 +2321,23 @@ impl<'a> FnGen<'a> {
                 };
                 (format!("leo_input_prompt({})", prompt), Ty::Str, true)
             }
+            Some(CallTarget::BuiltinStr) => {
+                let (code, t, _) = self.gen_expr(&args[0], g);
+                let c = match t {
+                    Ty::Int => format!("leo_str_from_i64({})", code),
+                    Ty::Float => format!("leo_str_from_f64({})", code),
+                    Ty::Bool => format!("leo_str_from_bool({})", code),
+                    Ty::Str => code,
+                    Ty::List(e) => format!(
+                        "leo_debug_str((void*)({}), {})",
+                        code,
+                        debug_kind(&e)
+                    ),
+                    Ty::Dict(_, _) => format!("leo_debug_str((void*)({}), 6)", code),
+                    _ => "leo_str_from_i64(0)".to_string(),
+                };
+                (c, Ty::Str, true)
+            }
             Some(CallTarget::BuiltinAssert) => {
                 let (code, _, _) = self.gen_expr(&args[0], g);
                 self.w(&format!(
@@ -2611,11 +2657,12 @@ impl<'a> FnGen<'a> {
                 // The callee expression: the closure value itself.
                 let (ccode, _, _) = self.gen_expr_borrowed(callee, g);
                 let fresh = g.is_rc(&ret);
-                (
-                    format!("{}({}, {})", sig, ccode, arg_codes.join(", ")),
-                    ret,
-                    fresh,
-                )
+                let call = if arg_codes.is_empty() {
+                    format!("{}({})", sig, ccode)
+                } else {
+                    format!("{}({}, {})", sig, ccode, arg_codes.join(", "))
+                };
+                (call, ret, fresh)
             }
             Some(CallTarget::ToCStr) => {
                 let (code, _, _) = self.gen_expr(callee_as_recv(callee), g);

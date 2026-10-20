@@ -97,6 +97,9 @@ pub struct ClosureInfo {
     pub ret: Ty,
     /// Captured outer locals, by value, in env-field order.
     pub captures: Vec<(String, Ty)>,
+    /// The literal declaration, kept so higher-order calls can re-infer
+    /// the lambda with the signature the call site expects.
+    pub decl: Option<FndeclExpr>,
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +169,8 @@ pub enum CallTarget {
     FnArg,
     /// input([prompt]) reads one line from stdin.
     BuiltinInput,
+    /// str(v): int/float/bool/collection to str.
+    BuiltinStr,
     /// float(int)
     BuiltinFloat,
     /// int(float)
@@ -509,7 +514,53 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
 /// Infer unannotated parameter types from how the body uses them.
 /// Constraints from literals, annotated callees, str methods, and the
 /// declared return type; anything unconstrained defaults to int.
+/// Enclosing locals visible to a lambda: name -> type.
+fn enclosing_types(_stmts: &[Stmt], ctx: &Ctx) -> HashMap<String, Ty> {
+    let mut out: HashMap<String, Ty> = HashMap::new();
+    for scope in &ctx.scopes {
+        for (k, v) in scope {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    out
+}
+
+fn infer_fndecl_expr_params(
+    f: &FndeclExpr,
+    a: &Analysis,
+    known: &HashMap<String, Ty>,
+) -> HashMap<String, Ty> {
+    let fake = FnDecl {
+        receiver: None,
+        name: String::new(),
+        params: f
+            .params
+            .iter()
+            .map(|p| Param {
+                name: p.name.clone(),
+                ty: p.ty.clone(),
+                is_self: p.is_self,
+                default: p.default.clone(),
+                span: p.span,
+            })
+            .collect(),
+        ret: f.ret.clone(),
+        body: f.body.clone(),
+        exported: false,
+        span: Span::new(0, 0, 0, 0),
+    };
+    infer_param_types_known(&fake, a, known)
+}
+
 fn infer_param_types(f: &FnDecl, a: &Analysis) -> HashMap<String, Ty> {
+    infer_param_types_known(f, a, &HashMap::new())
+}
+
+fn infer_param_types_known(
+    f: &FnDecl,
+    a: &Analysis,
+    known: &HashMap<String, Ty>,
+) -> HashMap<String, Ty> {
     let mut out: HashMap<String, Ty> = HashMap::new();
     let infer_params: Vec<&str> = f
         .params
@@ -522,7 +573,7 @@ fn infer_param_types(f: &FnDecl, a: &Analysis) -> HashMap<String, Ty> {
     }
     let ret = f.ret.as_ref().map(|t| conv_type(t, "", a));
     for st in &f.body {
-        constrain_stmt(st, &infer_params, &ret, &mut out, a);
+        constrain_stmt_k(st, &infer_params, &ret, &mut out, a, known);
     }
     // Recursion with inferred params cannot be resolved: those params
     // keep their constraints only if the body constrained them through
@@ -530,12 +581,13 @@ fn infer_param_types(f: &FnDecl, a: &Analysis) -> HashMap<String, Ty> {
     out
 }
 
-fn constrain_stmt(
+fn constrain_stmt_k(
     st: &Stmt,
     targets: &[&str],
     ret: &Option<Ty>,
     out: &mut HashMap<String, Ty>,
     a: &Analysis,
+    known: &HashMap<String, Ty>,
 ) {
     match &st.kind {
         StmtKind::Return(Some(e)) => {
@@ -546,41 +598,41 @@ fn constrain_stmt(
                     }
                 }
             }
-            constrain_expr(e, targets, out, a);
+            constrain_expr_k(e, targets, out, a, known);
         }
         StmtKind::Let { value, .. } | StmtKind::Assign { value, .. }
         | StmtKind::Raise(value) | StmtKind::Expr(value) => {
-            constrain_expr(value, targets, out, a)
+            constrain_expr_k(value, targets, out, a, known)
         }
         StmtKind::If { cond, then, elifs, els } => {
-            constrain_expr(cond, targets, out, a);
+            constrain_expr_k(cond, targets, out, a, known);
             for b in then {
-                constrain_stmt(b, targets, ret, out, a);
+                constrain_stmt_k(b, targets, ret, out, a, known);
             }
             for (c, b) in elifs {
-                constrain_expr(c, targets, out, a);
+                constrain_expr_k(c, targets, out, a, known);
                 for s in b {
-                    constrain_stmt(s, targets, ret, out, a);
+                    constrain_stmt_k(s, targets, ret, out, a, known);
                 }
             }
             if let Some(b) = els {
                 for s in b {
-                    constrain_stmt(s, targets, ret, out, a);
+                    constrain_stmt_k(s, targets, ret, out, a, known);
                 }
             }
         }
         StmtKind::While { cond, body } => {
-            constrain_expr(cond, targets, out, a);
+            constrain_expr_k(cond, targets, out, a, known);
             for s in body {
-                constrain_stmt(s, targets, ret, out, a);
+                constrain_stmt_k(s, targets, ret, out, a, known);
             }
         }
         StmtKind::For { iter, body, .. } => {
             if let Iter::Expr(ie) = iter {
-                constrain_expr(ie, targets, out, a);
+                constrain_expr_k(ie, targets, out, a, known);
             }
             for s in body {
-                constrain_stmt(s, targets, ret, out, a);
+                constrain_stmt_k(s, targets, ret, out, a, known);
             }
         }
         _ => {}
@@ -588,8 +640,21 @@ fn constrain_stmt(
 }
 
 fn constrain_expr(e: &Expr, targets: &[&str], out: &mut HashMap<String, Ty>, a: &Analysis) {
+    constrain_expr_k(e, targets, out, a, &HashMap::new())
+}
+
+fn constrain_expr_k(
+    e: &Expr,
+    targets: &[&str],
+    out: &mut HashMap<String, Ty>,
+    a: &Analysis,
+    known: &HashMap<String, Ty>,
+) {
     match &e.kind {
-        ExprKind::Ident(_) => {}
+        ExprKind::Ident(n) => {
+            // A target compared/combined with a known local takes its type.
+            let _ = n;
+        }
         ExprKind::Binary(op, l, r) => {
             // Literal on one side, target on the other: the literal's
             // type constrains the target.
@@ -606,13 +671,28 @@ fn constrain_expr(e: &Expr, targets: &[&str], out: &mut HashMap<String, Ty>, a: 
                             ExprKind::Str(_) if *op == BinOp::Add => {
                                 out.insert(n.clone(), Ty::Str);
                             }
-                            _ => {}
+                            _ => {
+                                // Ident with a known local's type.
+                                if let ExprKind::Ident(m) = &other.kind {
+                                    if let Some(t) = known.get(m) {
+                                        match t {
+                                            Ty::Int if *op != BinOp::Add => {
+                                                out.insert(n.clone(), Ty::Int);
+                                            }
+                                            Ty::Str if *op == BinOp::Add => {
+                                                out.insert(n.clone(), Ty::Str);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
-            constrain_expr(l, targets, out, a);
-            constrain_expr(r, targets, out, a);
+            constrain_expr_k(l, targets, out, a, known);
+            constrain_expr_k(r, targets, out, a, known);
         }
         ExprKind::Method(recv, name, args) => {
             // String methods constrain their receiver to str.
@@ -628,9 +708,9 @@ fn constrain_expr(e: &Expr, targets: &[&str], out: &mut HashMap<String, Ty>, a: 
                     out.insert(n.clone(), Ty::Str);
                 }
             }
-            constrain_expr(recv, targets, out, a);
+            constrain_expr_k(recv, targets, out, a, known);
             for arg in args {
-                constrain_expr(arg, targets, out, a);
+                constrain_expr_k(arg, targets, out, a, known);
             }
         }
         ExprKind::Call(callee, args) => {
@@ -859,6 +939,11 @@ fn stmt_guarantees_return(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut C
         StmtKind::Return(_) => true,
         // raise never falls through: the statement unwinds.
         StmtKind::Raise(_) => true,
+        // try/except guarantees a return when both arms do.
+        StmtKind::Try { body, handler, .. } => {
+            block_guarantees(body, module, a, ctx)
+                && block_guarantees(handler, module, a, ctx)
+        }
         StmtKind::If { then, elifs, els, .. } => {
             let Some(els) = els else { return false };
             if !block_guarantees(then, module, a, ctx) {
@@ -1268,6 +1353,51 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
             }
             None
         }
+        StmtKind::TypedAssign { name, ann, value } => {
+            let want = conv_type(ann, module, a);
+            // Seed the literal's type before inference so an empty
+            // collection takes the annotation.
+            let empty_lit = matches!(
+                value.kind,
+                ExprKind::ListLit(ref items) if items.is_empty()
+            ) || matches!(
+                value.kind,
+                ExprKind::DictLit(ref pairs) if pairs.is_empty()
+            );
+            if empty_lit && want != Ty::Err {
+                a.ty.insert((module.to_string(), value.span.start), want.clone());
+            }
+            let vt = infer_expr(value, module, a, ctx);
+            if matches!(want, Ty::Err) {
+                a.err(format!("unknown type '{}'", ann), st.span, module);
+                ctx.declare(name, vt);
+            } else {
+                // An empty collection literal takes the annotation.
+                let actual = match (&value.kind, &want) {
+                    (ExprKind::ListLit(items), _) if items.is_empty() && matches!(want, Ty::List(_)) => want.clone(),
+                    (ExprKind::DictLit(pairs), _) if pairs.is_empty() && matches!(want, Ty::Dict(_, _)) => want.clone(),
+                    _ => vt,
+                };
+                if actual != want && actual != Ty::Err && want != Ty::Err {
+                    a.err(
+                        format!("annotation {} does not match the value {}", want.show(a), actual.show(a)),
+                        st.span,
+                        module,
+                    );
+                }
+                let final_ty = match (&value.kind, &want) {
+                    (ExprKind::ListLit(items), Ty::List(_)) if items.is_empty() => want.clone(),
+                    (ExprKind::DictLit(pairs), Ty::Dict(_, _)) if pairs.is_empty() => want.clone(),
+                    _ => actual,
+                };
+                ctx.declare(name, final_ty.clone());
+                let key = (module.to_string(), value.span.start);
+                if matches!(value.kind, ExprKind::ListLit(_)) || matches!(value.kind, ExprKind::DictLit(_)) {
+                    a.ty.insert(key, final_ty);
+                }
+            }
+            None
+        }
         StmtKind::AssignMulti { targets, value } => {
             let vt = infer_expr(value, module, a, ctx);
             match &vt {
@@ -1594,7 +1724,7 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
                 match &elem {
                     None => elem = Some(t),
                     Some(prev) => {
-                        if *prev != t && t != Ty::Err && *prev != Ty::Err {
+                        if !func_compatible(a, prev, &t) && t != Ty::Err && *prev != Ty::Err && *prev != t {
                             a.err(
                                 format!(
                                     "list elements disagree: {} then {}",
@@ -1611,8 +1741,13 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
             match elem {
                 Some(t) => Ty::List(Box::new(t)),
                 None => {
+                    // A pre-seeded annotation (let d: dict[...] = ... or
+                    // d: dict[...] = ...) types the literal.
+                    if let Some(pre) = a.ty.get(&(module.to_string(), e.span.start)) {
+                        return pre.clone();
+                    }
                     a.err(
-                        "cannot infer the element type of an empty list; annotate it: let xs: list[int] = []".to_string(),
+                        "cannot infer the element type of an empty list; annotate it: xs: list[int] = []".to_string(),
                         e.span,
                         module,
                     );
@@ -1651,6 +1786,7 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
             }
             match (kt, vt) {
                 (Some(k), Some(v)) => {
+                    let _ = ();
                     if k != Ty::Str && k != Ty::Int {
                         a.err(
                             "dict keys must be str or int in v0.1".to_string(),
@@ -1661,8 +1797,11 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
                     Ty::Dict(Box::new(k), Box::new(v))
                 }
                 _ => {
+                    if let Some(pre) = a.ty.get(&(module.to_string(), e.span.start)) {
+                        return pre.clone();
+                    }
                     a.err(
-                        "cannot infer the types of an empty dict; annotate it: let d: dict[str, int] = {}".to_string(),
+                        "cannot infer the types of an empty dict; annotate it: d: dict[str, int] = {}".to_string(),
                         e.span,
                         module,
                     );
@@ -1678,9 +1817,15 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
         ExprKind::FnExpr(f) => {
             // Register a closure signature and capture list.
             let key = format!("lam_{}_{}", module, a.closures.len());
+            let known = enclosing_types(&[], ctx);
+            let lam_inferred = infer_fndecl_expr_params(f, a, &known);
             let mut params = Vec::new();
             for p in &f.params {
-                params.push(conv_type(&p.ty, module, a));
+                if matches!(&p.ty, Type::Named(n) if n == "__infer") {
+                    params.push(lam_inferred.get(&p.name).cloned().unwrap_or(Ty::Int));
+                } else {
+                    params.push(conv_type(&p.ty, module, a));
+                }
             }
             // Body sees its own params plus the enclosing scope for
             // capture analysis; infer in a fresh scope.
@@ -1739,6 +1884,7 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
                     params: params.clone(),
                     ret: inferred.clone(),
                     captures,
+                    decl: Some((**f).clone()),
                 },
             );
             Ty::Func(key)
@@ -1868,6 +2014,10 @@ fn collect_stmt_names(st: &Stmt, out: &mut Vec<String>, seen: &mut std::collecti
             if let LValue::Ident(n) = target {
                 add_name(n, out, seen);
             }
+            collect_expr_names(value, out, seen);
+        }
+        StmtKind::TypedAssign { name, value, .. } => {
+            add_name(name, out, seen);
             collect_expr_names(value, out, seen);
         }
         StmtKind::AssignMulti { targets, value } => {
@@ -2009,6 +2159,78 @@ fn collect_expr_names(e: &Expr, out: &mut Vec<String>, seen: &mut std::collectio
         ExprKind::FnExpr(_) => {}
         _ => {}
     }
+}
+
+/// Re-infer a lambda literal with the parameter types a higher-order
+/// call expects, when those parameters were unannotated.
+fn try_adapt_lambda(
+    fn_arg: &Expr,
+    want_params: Vec<Ty>,
+    want_ret: Option<Ty>,
+    module: &str,
+    a: &mut Analysis,
+    _ctx: &mut Ctx,
+) {
+    // Only lambda literals with inferred params can adapt.
+    let ExprKind::FnExpr(f) = &fn_arg.kind else { return };
+    let unannotated = f
+        .params
+        .iter()
+        .filter(|p| matches!(&p.ty, Type::Named(n) if n == "__infer"))
+        .count();
+    if unannotated != f.params.len() || f.params.len() != want_params.len() {
+        return;
+    }
+    // Find the closure registered for this expression and re-infer it
+    // with forced types.
+    let key = match a.ty.get(&(module.to_string(), fn_arg.span.start)) {
+        Some(Ty::Func(k)) => k.clone(),
+        _ => return,
+    };
+    let Some(ci) = a.closures.get(&key) else { return };
+    let captures = ci.captures.clone();
+    // Re-run the FnExpr inference with forced params.
+    let mut sub = Ctx {
+        scopes: vec![HashMap::new()],
+        ret: want_ret.clone().unwrap_or(Ty::Err),
+        loop_depth: 0,
+    };
+    for (cname, cty) in &captures {
+        sub.declare(cname, cty.clone());
+    }
+    let declared = f.ret.as_ref().map(|r| conv_type(r, module, a));
+    for (i, ty) in want_params.iter().enumerate() {
+        sub.declare(&f.params[i].name, ty.clone());
+    }
+    let before = a.errors.len();
+    let _ = infer_block(&f.body, module, a, &mut sub, declared.clone().unwrap_or(Ty::Err), f.ret.is_none());
+    let new_errors = a.errors.len() > before;
+    if !new_errors {
+        let ret = want_ret.or(declared).unwrap_or(infer_block(&f.body, module, a, &mut sub, Ty::Err, true));
+        if let Some(ci) = a.closures.get_mut(&key) {
+            ci.params = want_params;
+            ci.ret = ret;
+        }
+    }
+}
+
+/// Two function types agree when their signatures agree, regardless of
+/// which lambda or named function produced them.
+fn func_compatible(a: &Analysis, x: &Ty, y: &Ty) -> bool {
+    let (xk, yk) = match (x, y) {
+        (Ty::Func(p), Ty::Func(q)) => (p.clone(), q.clone()),
+        _ => return false,
+    };
+    let sig = |k: &str| -> (Vec<Ty>, Ty) {
+        if let Some(ci) = a.closures.get(k) {
+            (ci.params.clone(), ci.ret.clone())
+        } else if let Some(fi) = a.fns.get(k) {
+            (fi.params.iter().map(|p| p.ty.clone()).collect(), fi.ret.clone())
+        } else {
+            (Vec::new(), Ty::Err)
+        }
+    };
+    sig(&xk) == sig(&yk)
 }
 
 /// Collections and strings are accepted as conditions: nonempty is true.
@@ -2242,6 +2464,17 @@ fn infer_call(
                 }
                 a.call.insert((module.to_string(), call_expr.span.start), CallTarget::BuiltinInt);
                 return Ty::Int;
+            }
+            "str" => {
+                if args.len() != 1 {
+                    a.err("str takes one value".to_string(), call_expr.span, module);
+                }
+                let t = infer_expr(&args[0], module, a, ctx);
+                if !t.printable() && !matches!(t, Ty::List(_) | Ty::Dict(_, _)) && t != Ty::Err {
+                    a.err(format!("str converts a printable value, got {}", t.show(a)), call_expr.span, module);
+                }
+                a.call.insert((module.to_string(), call_expr.span.start), CallTarget::BuiltinStr);
+                return Ty::Str;
             }
             "input" => {
                 if args.len() > 1 {
@@ -2550,8 +2783,19 @@ fn infer_method(
                         }
                         _ => (Vec::new(), Ty::Err),
                     };
+
                     match op {
                         ListOp::Map => {
+                            if params.len() == 1 && params[0] != **elem {
+                                try_adapt_lambda(&fn_arg, vec![(**elem).clone()], None, module, a, ctx);
+                            }
+                            let (params, fret) = match &ft {
+                                Ty::Func(key2) if a.closures.contains_key(key2) => {
+                                    let ci = a.closures.get(key2).unwrap();
+                                    (ci.params.clone(), ci.ret.clone())
+                                }
+                                _ => (params, fret),
+                            };
                             if params.len() != 1 || params[0] != **elem {
                                 a.err(
                                     format!(
@@ -2574,6 +2818,16 @@ fn infer_method(
                             Ty::List(Box::new(fret))
                         }
                         ListOp::Filter => {
+                            if params.len() == 1 && (params[0] != **elem || fret != Ty::Bool) {
+                                try_adapt_lambda(&fn_arg, vec![(**elem).clone()], Some(Ty::Bool), module, a, ctx);
+                            }
+                            let (params, fret) = match &ft {
+                                Ty::Func(key2) if a.closures.contains_key(key2) => {
+                                    let ci = a.closures.get(key2).unwrap();
+                                    (ci.params.clone(), ci.ret.clone())
+                                }
+                                _ => (params, fret),
+                            };
                             if params.len() != 1 || params[0] != **elem || fret != Ty::Bool {
                                 a.err(
                                     "list.filter wants a function taking the element and returning bool"
@@ -2593,6 +2847,31 @@ fn infer_method(
                             Ty::List(elem.clone())
                         }
                         ListOp::Reduce => {
+                            if params.len() == 2 {
+                                let init_t = args.get(1).map(|i| {
+                                    let saved_errors = a.errors.len();
+                                    let t = infer_expr(i, module, a, ctx);
+                                    a.errors.truncate(saved_errors);
+                                    t
+                                });
+                                if let Some(acc) = init_t {
+                                    try_adapt_lambda(
+                                        &fn_arg,
+                                        vec![acc.clone(), (**elem).clone()],
+                                        Some(acc),
+                                        module,
+                                        a,
+                                        ctx,
+                                    );
+                                }
+                            }
+                            let (params, fret) = match &ft {
+                                Ty::Func(key2) if a.closures.contains_key(key2) => {
+                                    let ci = a.closures.get(key2).unwrap();
+                                    (ci.params.clone(), ci.ret.clone())
+                                }
+                                _ => (params, fret),
+                            };
                             let init = args.get(1).cloned();
                             let acc_ty = match init {
                                 Some(iexpr) => infer_expr(&iexpr, module, a, ctx),
