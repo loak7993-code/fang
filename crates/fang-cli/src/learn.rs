@@ -124,7 +124,7 @@ print(double(21))",
     Lesson {
         title: "8. Talking to files",
         teach: "Programs become real when they remember things. The fs module writes a file, reads it back, and checks whether it exists. write_file makes it, read_file hands you the text.",
-        program: "import fs\nfs.write_file(\"/tmp/leo-test/l8.txt\", \"___\")\nprint(fs.read_file(\"/tmp/leo-test/l8.txt\"))",
+        program: "import fs\nfs.write_file(\"/tmp/l8.txt\", \"___\")\nprint(fs.read_file(\"/tmp/l8.txt\"))",
         expect: "fang remembers\n",
         hint: "Write the words: fang remembers (already inside the quotes).",
         recap: "You wrote a real file to disk and read it back. Everything a program saves, loads, or shares goes through this door.",
