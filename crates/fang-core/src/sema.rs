@@ -16,6 +16,8 @@ pub enum Ty {
     Tuple(Box<Ty>, Box<Ty>),
     Struct(String),
     Func(String),
+    /// Structural function type: fn(A, B) -> C.
+    Sig(Vec<Ty>, Box<Ty>),
     /// The except binder: printable and re-raisable, nothing else.
     Any,
     Void,
@@ -48,7 +50,7 @@ impl Ty {
                 .get(m)
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| m.clone()),
-            Ty::Func(_) => "fn".into(),
+            Ty::Func(_) | Ty::Sig(..) => "fn".into(),
             Ty::Any => "any (except value)".into(),
             Ty::Void => "void".into(),
             Ty::Err => "unknown".into(),
@@ -171,6 +173,8 @@ pub enum CallTarget {
     BuiltinInput,
     /// str(v): int/float/bool/collection to str.
     BuiltinStr,
+    /// Call through a structural fn type: carries the signature.
+    SigCall(Vec<Ty>, Ty),
     /// float(int)
     BuiltinFloat,
     /// int(float)
@@ -785,10 +789,24 @@ fn conv_type(t: &Type, module: &str, a: &Analysis) -> Ty {
         Type::Named(n) => {
             let mangled = format!("s_{}_{}", module, n);
             if a.structs.contains_key(&mangled) {
-                Ty::Struct(mangled)
-            } else {
-                Ty::Err
+                return Ty::Struct(mangled);
             }
+            // A struct imported from another module: import server puts
+            // its exported structs in scope by name.
+            if let Some(imps) = a.imports.get(module) {
+                for im in imps {
+                    let m2 = format!("s_{}_{}", im, n);
+                    if a.structs.contains_key(&m2) {
+                        return Ty::Struct(m2);
+                    }
+                }
+            }
+            Ty::Err
+        }
+        Type::Fn(params, ret) => {
+            let ps = params.iter().map(|p| conv_type(p, module, a)).collect();
+            let r = conv_type(ret, module, a);
+            Ty::Sig(ps, Box::new(r))
         }
     }
 }
@@ -992,7 +1010,13 @@ fn infer_block_top(
 ) -> Ty {
     let mut info = block_ret_info(stmts, module, a, ctx);
     if fn_top {
-        if let Some(last) = stmts.last() {
+        // Comments attach to the previous block; skip them when
+        // finding the trailing expression.
+        let last = stmts
+            .iter()
+            .rev()
+            .find(|st| !matches!(st.kind, StmtKind::Comment(_)));
+        if let Some(last) = last {
             if let StmtKind::Expr(e) = &last.kind {
                 if let Some(t) = a.ty.get(&(module.to_string(), e.span.start)) {
                     info.merge_seen(t.clone(), last.span, module, a);
@@ -2386,6 +2410,36 @@ fn infer_call(
 ) -> Ty {
     // Bare identifier call.
     if let ExprKind::Ident(name) = &callee.kind {
+        // structural function type: check the signature directly
+        if let Some(Ty::Sig(params, ret)) = ctx.lookup(name) {
+            if args.len() != params.len() {
+                a.err(
+                    format!(
+                        "this function takes {} argument{}, got {}",
+                        params.len(),
+                        if params.len() == 1 { "" } else { "s" },
+                        args.len()
+                    ),
+                    call_expr.span,
+                    module,
+                );
+            }
+            for (arg, want) in args.iter().zip(params.iter()) {
+                let t = infer_expr(arg, module, a, ctx);
+                if t != *want && t != Ty::Err && *want != Ty::Err {
+                    a.err(
+                        format!("parameter wants {}, got {}", want.show(a), t.show(a)),
+                        arg.span,
+                        module,
+                    );
+                }
+            }
+            a.call.insert(
+                (module.to_string(), call_expr.span.start),
+                CallTarget::SigCall(params.clone(), *ret.clone()),
+            );
+            return *ret.clone();
+        }
         // function value in a local: closure or named fn
         if let Some(Ty::Func(key)) = ctx.lookup(name) {
             if let Some(ci) = a.closures.get(&key).cloned() {
@@ -2409,6 +2463,20 @@ fn infer_call(
         let sm = format!("s_{}_{}", module, name);
         if a.structs.contains_key(&sm) {
             return struct_new(&sm, args, call_expr, module, a, ctx);
+        }
+        // struct constructor from an imported module
+        if let Some(imps) = a.imports.get(module) {
+            let mut found: Option<String> = None;
+            for im in imps {
+                let m2 = format!("s_{}_{}", im, name);
+                if a.structs.contains_key(&m2) {
+                    found = Some(m2);
+                    break;
+                }
+            }
+            if let Some(m2) = found {
+                return struct_new(&m2, args, call_expr, module, a, ctx);
+            }
         }
         // extern declared in this module (so std wrappers can call the C symbol)
         let xm = format!("x_{}_{}", module, name);
@@ -2714,7 +2782,12 @@ fn check_args(fi: &FnInfo, args: &[Expr], call_expr: &Expr, module: &str, a: &mu
     }
     for (arg, p) in args.iter().zip(fi.params.iter()) {
         let t = infer_expr(arg, module, a, ctx);
-        if t != p.ty && t != Ty::Err && p.ty != Ty::Err {
+        let ok = t == p.ty
+            || t == Ty::Err
+            || p.ty == Ty::Err
+            || (matches!(p.ty, Ty::Sig(..)) && sig_accepts(a, &p.ty, &t))
+            || (matches!(t, Ty::Sig(..)) && sig_accepts(a, &t, &p.ty));
+        if !ok {
             a.err(
                 format!("parameter '{}' wants {}, got {}", p.name, p.ty.show(a), t.show(a)),
                 arg.span,
@@ -2722,6 +2795,21 @@ fn check_args(fi: &FnInfo, args: &[Expr], call_expr: &Expr, module: &str, a: &mu
             );
         }
     }
+}
+
+/// A Sig accepts a concrete function value whose signature matches.
+fn sig_accepts(a: &Analysis, sig: &Ty, value: &Ty) -> bool {
+    let (Ty::Sig(params, ret), Ty::Func(key)) = (sig, value) else {
+        return false;
+    };
+    let (fparams, fret) = if let Some(ci) = a.closures.get(key) {
+        (ci.params.clone(), ci.ret.clone())
+    } else if let Some(fi) = a.fns.get(key) {
+        (fi.params.iter().map(|p| p.ty.clone()).collect(), fi.ret.clone())
+    } else {
+        return false;
+    };
+    fparams == *params && fret == **ret
 }
 
 fn infer_method(

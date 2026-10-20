@@ -1,0 +1,7 @@
+200 text/html <h1>hi</h1>
+200 application/json [1,2]
+200 text/plain
+404 not found
+302 text/html moved
+root: GET
+404

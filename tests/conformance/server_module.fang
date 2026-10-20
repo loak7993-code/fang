@@ -1,0 +1,28 @@
+# The server module: requests become values, handlers return values.
+
+import server
+
+fn handler(req: Request):
+  if req.path == "/":
+    return server.text("root: " + req.method)
+  return server.not_found()
+  # fn types as annotations: the handler is a value like any other.
+
+fn apply(h: fn(Request) -> Response, req: Request) -> Response:
+  h(req)
+
+fn main():
+  r = server.html("<h1>hi</h1>")
+  print(r.status, r.content_type, r.body)
+  j = server.json("[1,2]")
+  print(j.status, j.content_type, j.body)
+  t = server.text("plain")
+  print(t.status, t.content_type)
+  nf = server.not_found()
+  print(nf.status, nf.body)
+  custom = server.respond(302, "text/html", "moved")
+  print(custom.status, custom.content_type, custom.body)
+  req = Request("GET", "/", "")
+  print(apply(handler, req).body)
+  req2 = Request("GET", "/missing", "")
+  print(apply(handler, req2).status)

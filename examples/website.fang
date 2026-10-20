@@ -1,0 +1,22 @@
+# A complete backend website in Fang.
+
+import server
+import json
+
+fn home():
+  "<html><body><h1>hello from fang</h1></body></html>"
+
+fn api_info():
+  json.stringify(json.parse("{\"lang\": \"fang\", \"version\": \"1.2.0\", \"native\": true}"))
+
+fn handler(req: Request):
+  if req.path == "/":
+    return server.html(home())
+  elif req.path == "/api":
+    return server.json(api_info())
+  elif req.path == "/health":
+    return server.text("ok")
+  return server.not_found()
+
+fn main():
+  server.serve(handler, 8080)

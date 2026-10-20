@@ -67,6 +67,7 @@ static STD_MODULES: &[(&str, &str)] = &[
     ("json", include_str!("../../../std/json.fang")),
     ("net", include_str!("../../../std/net.fang")),
     ("py", include_str!("../../../std/py.fang")),
+    ("server", include_str!("../../../std/server.fang")),
 ];
 
 use std::collections::HashMap;

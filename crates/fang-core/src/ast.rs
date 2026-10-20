@@ -26,6 +26,8 @@ pub enum Type {
     Dict(Box<Type>, Box<Type>),
     Tuple(Box<Type>, Box<Type>),
     Named(String),
+    /// Function type: fn(A, B) -> C
+    Fn(Vec<Type>, Box<Type>),
 }
 
 impl std::fmt::Display for Type {
@@ -40,6 +42,10 @@ impl std::fmt::Display for Type {
             Type::Dict(k, v) => write!(f, "dict[{}, {}]", k, v),
             Type::Tuple(a, b) => write!(f, "({}, {})", a, b),
             Type::Named(n) => write!(f, "{}", n),
+            Type::Fn(params, ret) => {
+                let ps: Vec<String> = params.iter().map(|t| t.to_string()).collect();
+                write!(f, "fn({}) -> {}", ps.join(", "), ret)
+            }
         }
     }
 }

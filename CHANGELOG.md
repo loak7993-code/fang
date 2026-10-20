@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.2.0] - 2026-10-20
+
+Build anything, from backend websites to kernels.
+
+### Added
+
+- `server` module: an HTTP server in pure Fang. `server.serve(handler,
+  port)` runs an accept loop; handlers are plain function values typed
+  `fn(Request) -> Response` with fields `method`, `path`, `body`.
+  Builders: `server.html/json/text/respond/not_found`. GET and POST
+  (Content-Length bodies) verified end to end with curl.
+- Function types as annotations: `fn(A, B) -> C`. Function values are
+  checked structurally against them, so higher-order APIs like `serve`
+  are typed like any other parameter.
+- Runtime: `fang_tcp_listen` and `fang_tcp_accept` server-side TCP
+  primitives; `fang_tcp_recv_http` reads exactly one request (headers
+  plus Content-Length body) without waiting for the peer to close.
+- Structs from imported modules resolve in annotations and
+  constructors: `import server` puts `Request` and `Response` in
+  scope by name.
+- `examples/website.fang`: a complete website with HTML, JSON, and
+  health routes.
+
 ## [1.1.0] - 2026-10-20
 
 Type less words.

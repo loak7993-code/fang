@@ -1135,6 +1135,27 @@ impl<'a> Parser<'a> {
             self.expect(&RParen, "')'")?;
             return Ok(Type::Tuple(Box::new(a), Box::new(b)));
         }
+        // Function type: fn(A, B) -> C
+        if self.at(&Fn) {
+            self.advance();
+            self.expect(&LParen, "'('")?;
+            let mut params = Vec::new();
+            if !self.at(&RParen) {
+                loop {
+                    params.push(self.parse_type()?);
+                    if !self.eat(&Comma) {
+                        break;
+                    }
+                }
+            }
+            self.expect(&RParen, "')'")?;
+            let ret = if self.eat(&Arrow) {
+                self.parse_type()?
+            } else {
+                Type::Named("void".to_string())
+            };
+            return Ok(Type::Fn(params, Box::new(ret)));
+        }
         let (name, t) = self.ident_tok("a type")?;
         match name.as_str() {
             "int" => Ok(Type::Int),

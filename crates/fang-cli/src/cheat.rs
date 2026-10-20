@@ -39,7 +39,7 @@ fang run app.fang               compile and run        fang build app.fang --rel
 fang learn                     the full course        fang doc <any word above>
 fang repl                      try things live        fang test / fang add <git>
 
-That is everything. The stdlib: import str, math, os, fs, time, json, net.";
+That is everything. The stdlib: import str, math, os, fs, time, json, net, server.";
 
 pub fn cmd_cheat() -> ExitCode {
     println!("{}", CHEAT);
@@ -53,7 +53,7 @@ const DOC_ENTRIES: &[(&str, &str)] = &[
     ("while", "while cond: repeats its block until cond is false.\n  while len(xs) > 0:\n    xs.pop()"),
     ("for", "for x in items: loops over a list, dict keys, or a range.\n  for i in 0..10:      0 through 9\n  for i in 0..=10:     0 through 10\n  for x in xs:\n  for k, v in d.items():   pairs"),
     ("range", "Ranges only appear in for loops: 0..10 excludes the end, 0..=10 includes it."),
-    ("fn", "fn name(a, b): defines a function. Types optional; -> declares the return.\n  fn add(a, b):\n    return a + b\nRecursive functions need the return type: fn fib(n: int) -> int:\nA method takes self: fn Point.length(self) -> float:"),
+    ("fn", "fn name(a, b): defines a function. Types optional; -> declares the return.\n  fn add(a, b):\n    return a + b\nThe last expression is the return value: fn double(n): n * 2\nRecursive functions need the return type: fn fib(n: int) -> int:\nA method takes self: fn Point.length(self) -> float:\nFunction types are annotations: fn(int, int) -> int"),
     ("struct", "struct bundles fields; call its name to build one.\n  struct Point:\n    x: float\n    y: float\n  p = Point(3.0, 4.0)\n  print(p.x)"),
     ("list", "A typed, growable array.\n  xs = [1, 2, 3]\n  xs.push(4)  xs.pop()  xs.sort()  xs.reverse()\n  xs[0]  xs[-1]  xs[1:3]  len(xs)\n  xs.map(f)  xs.filter(f)  xs.reduce(f, init)\nEmpty needs a type: xs: list[int] = []"),
     ("dict", "Maps str or int keys to values.\n  d = {\"a\": 1}\n  d[\"b\"] = 2\n  d.get(\"a\", 0)  d.set(\"k\", v)  d.remove(\"k\")\n  for k in d:  for k, v in d.items():\nEmpty needs a type: d: dict[str, int] = {}"),
@@ -65,7 +65,8 @@ const DOC_ENTRIES: &[(&str, &str)] = &[
     ("reduce", "list.reduce(f, start) folds a list into one value.\n  total = xs.reduce(fn(acc, x): return acc + x, 0)"),
     ("try", "try runs risky code; except e catches a raise.\n  try:\n    raise \"disk full\"\n  except e:\n    print(f\"caught: {e}\")\nUncaught errors exit with code 101."),
     ("raise", "raise \"message\" throws an error; catch it with try/except."),
-    ("import", "import math loads a module; call it as math.sqrt(2.0).\n  import utils                finds utils.fang beside your file\n  import utils from \"./d/u.fang\"\nStandard library: str, math, io, os, fs, time, json, net, py."),
+    ("import", "import math loads a module; call it as math.sqrt(2.0).\n  import utils                finds utils.fang beside your file\n  import utils from \"./d/u.fang\"\nStandard library: str, math, io, os, fs, time, json, net, py, server."),
+    ("server", "HTTP server in pure Fang.\n  import server\n  fn handler(req: Request):\n    if req.path == \"/\":\n      return server.html(\"<h1>hi</h1>\")\n    return server.not_found()\n  server.serve(handler, 8080)\nHandler type: fn(Request) -> Response. Fields: method, path, body.\nBuilders: server.html/json/text/respond/not_found."),
     ("extern", "extern declares a C function and calls it natively.\n  extern fn sqrt(x: float) -> float from \"math.h\"\n  print(sqrt(2.0))"),
     ("asm", "asm(\"instruction\") emits inline assembly.\n  asm(\"nop\")"),
     ("cast", "cast converts pointers and integers.\n  p = cast[ptr](1)\n  n = cast[int](p)"),

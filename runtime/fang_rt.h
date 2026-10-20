@@ -139,6 +139,12 @@ fang_str* fang_input_prompt(fang_str* prompt);
 /* ------------------------------------------------------------------ */
 
 void* fang_net_resolve(fang_str* host, int64_t port);
+/* Server side: bind to a port and listen. */
+void* fang_tcp_listen(int64_t port);
+/* Blocking accept on a listening socket; returns the client fd. */
+void* fang_tcp_accept(void* srv);
+/* Read one HTTP request: headers plus Content-Length body. */
+fang_str* fang_tcp_recv_http(void* sock);
 int64_t fang_tcp_send(void* sock, fang_str* data);
 fang_str* fang_tcp_recv_all(void* sock);
 void fang_tcp_close(void* sock);

@@ -240,7 +240,7 @@ impl<'a> Gen<'a> {
             Ty::Dict(k, v) => format!("d_{}_{}", self.sfx(k), self.sfx(v)),
             Ty::Tuple(a, b) => format!("t_{}_{}", self.sfx(a), self.sfx(b)),
             Ty::Struct(m) => m.clone(),
-            Ty::Func(_) | Ty::Any | Ty::Void | Ty::Err => "v".into(),
+            Ty::Func(_) | Ty::Sig(..) | Ty::Any | Ty::Void | Ty::Err => "v".into(),
         }
     }
 
@@ -255,6 +255,7 @@ impl<'a> Gen<'a> {
             Ty::Dict(k, v) => format!("fang_dict_{}_{}*", self.sfx(k), self.sfx(v)),
             Ty::Tuple(a, b) => format!("fang_tuple_{}_{}", self.sfx(a), self.sfx(b)),
             Ty::Struct(m) => format!("fang_{}", m),
+            Ty::Sig(..) => "fang_closure*".into(),
             Ty::Func(_) => "fang_closure*".into(),
             Ty::Any => "fang_str*".into(),
             Ty::Void | Ty::Err => "void".into(),
@@ -278,13 +279,13 @@ impl<'a> Gen<'a> {
     }
 
     fn is_rc(&self, t: &Ty) -> bool {
-        matches!(t, Ty::Str | Ty::List(_) | Ty::Dict(_, _) | Ty::Func(_))
+        matches!(t, Ty::Str | Ty::List(_) | Ty::Dict(_, _) | Ty::Func(_) | Ty::Sig(..))
     }
 
     fn decref_stmt(&self, expr: &str, t: &Ty) -> String {
         match t {
             Ty::Str => format!("fang_str_decref({});", expr),
-            Ty::Func(_) => format!("fang_closure_decref({});", expr),
+            Ty::Func(_) | Ty::Sig(..) => format!("fang_closure_decref({});", expr),
             Ty::List(e) => format!("fang_list_{}_decref({});", self.sfx(e), expr),
             Ty::Dict(k, v) => {
                 format!("fang_dict_{}_{}_decref({});", self.sfx(k), self.sfx(v), expr)
@@ -2676,6 +2677,31 @@ impl<'a> FnGen<'a> {
                 };
                 (call, ret, fresh)
             }
+            Some(CallTarget::SigCall(params, ret)) => {
+                let key = format!(
+                    "sig_{}_{}",
+                    params.iter().map(|p| g.sfx(p)).collect::<Vec<_>>().join("_"),
+                    g.sfx(&ret)
+                );
+                let sig = g.stamp_trampoline(&key, &params, &ret);
+                let mut arg_codes = Vec::new();
+                for (i, arg) in args.iter().enumerate() {
+                    let pt = params.get(i).cloned().unwrap_or(Ty::Err);
+                    let (code, _, fr) = self.gen_expr(arg, g);
+                    if g.is_rc(&pt) && !fr && !matches!(pt, Ty::Sig(..) | Ty::Func(_)) {
+                        self.w(&format!("fang_incref((void*)({}));", code));
+                    }
+                    arg_codes.push(code);
+                }
+                let (ccode, _, _) = self.gen_expr_borrowed(callee, g);
+                let fresh = g.is_rc(&ret);
+                let call = if arg_codes.is_empty() {
+                    format!("{}({})", sig, ccode)
+                } else {
+                    format!("{}({}, {})", sig, ccode, arg_codes.join(", "))
+                };
+                (call, ret, fresh)
+            }
             Some(CallTarget::ToCStr) => {
                 let (code, _, _) = self.gen_expr(callee_as_recv(callee), g);
                 (format!("((void*)({})->bytes)", code), Ty::Ptr, false)
@@ -2794,29 +2820,50 @@ fn debug_kind(elem: &Ty) -> i32 {
 }
 
 fn emit_body_with_trailing(fg: &mut crate::codegen::FnGen, body: &[Stmt], ret: &Ty, g: &crate::codegen::Gen) {
-    let n = body.len();
-    if n == 0 {
-        return;
-    }
-    let (last, rest) = body.split_last().unwrap();
+    // Comments attach to the previous block; the trailing expression is
+    // the last non-comment statement.
+    let last_idx = body
+        .iter()
+        .rposition(|st| !matches!(st.kind, StmtKind::Comment(_)));
+    let last_idx = match last_idx {
+        Some(i) => i,
+        None => {
+            fg.stmts(body, g);
+            return;
+        }
+    };
+    let last = &body[last_idx];
+    let prefix = &body[..last_idx];
     let implicit_ret = !matches!(ret, Ty::Void | Ty::Err)
         && matches!(&last.kind, StmtKind::Expr(_));
-    if implicit_ret {
-        if let [prefix @ ..] = rest {
-            fg.stmts(prefix, g);
-        }
-        if let StmtKind::Expr(e) = &last.kind {
-            fg.line_of(last);
-            let (code, _t, fresh) = fg.gen_expr(e, g);
-            if !fresh && matches!(ret, Ty::Str | Ty::List(_) | Ty::Dict(_, _) | Ty::Struct(_)) {
-                fg.w(&format!("leo_incref((void*)({}));", code));
-            }
-            fg.w(&format!("__ret = {}; goto __exit;", code));
-            fg.flush_temps(g);
-        }
-    } else {
+    if !implicit_ret {
         fg.stmts(body, g);
+        return;
     }
+    // One scope for the whole body, exactly like stmts(): the trailing
+    // expression must still see the locals the prefix statements declared.
+    fg.scopes.push(std::collections::HashMap::new());
+    for st in prefix {
+        fg.stmt(st, g);
+    }
+    if let StmtKind::Expr(e) = &last.kind {
+        fg.line_of(last);
+        let (code, _t, fresh) = fg.gen_expr(e, g);
+        if g.is_rc(ret) && !fresh {
+            fg.w(&format!("fang_incref((void*)({}));", code));
+        }
+        if let Ty::Struct(m) = ret {
+            fg.w(&format!("{} __r = {};", g.ctype(ret), code));
+            for si in g.struct_field_incref("__r", m) {
+                fg.w(&si);
+            }
+            fg.w("__ret = __r; goto __exit;");
+        } else {
+            fg.w(&format!("__ret = {}; goto __exit;", code));
+        }
+        fg.flush_temps(g);
+    }
+    fg.scopes.pop();
 }
 
 fn default_value(t: &Ty) -> String {

@@ -1,0 +1,101 @@
+# HTTP server in pure Fang. The handler receives a Request and
+
+# returns a Response.
+
+extern fn fang_tcp_listen(port: int) -> ptr from "fang_rt.h"
+
+extern fn fang_tcp_accept(srv: ptr) -> ptr from "fang_rt.h"
+
+extern fn fang_tcp_send(sock: ptr, data: str) -> int from "fang_rt.h"
+
+extern fn fang_tcp_recv_http(sock: ptr) -> str from "fang_rt.h"
+
+extern fn fang_tcp_close(sock: ptr) from "fang_rt.h"
+
+struct Request:
+  method: str
+  path: str
+  body: str
+
+struct Response:
+  status: int
+  content_type: str
+  body: str
+
+export fn respond(status: int, content_type: str, body: str) -> Response:
+  Response(status, content_type, body)
+
+export fn html(body: str) -> Response:
+  Response(200, "text/html", body)
+
+export fn json(body: str) -> Response:
+  Response(200, "application/json", body)
+
+export fn text(body: str) -> Response:
+  Response(200, "text/plain", body)
+
+export fn not_found() -> Response:
+  Response(404, "text/plain", "not found")
+
+fn status_line(status: int) -> str:
+  if status == 200:
+    return "200 OK"
+  if status == 201:
+    return "201 Created"
+  if status == 204:
+    return "204 No Content"
+  if status == 301:
+    return "301 Moved Permanently"
+  if status == 302:
+    return "302 Found"
+  if status == 400:
+    return "400 Bad Request"
+  if status == 401:
+    return "401 Unauthorized"
+  if status == 403:
+    return "403 Forbidden"
+  if status == 404:
+    return "404 Not Found"
+  if status == 500:
+    return "500 Internal Server Error"
+  return f"{status} Status"
+  # Parse one request from the raw bytes.
+
+fn parse_request(raw: str) -> Request:
+  head_end = raw.find("\r\n\r\n")
+  let head = raw
+  let body = ""
+  if head_end >= 0:
+    head = raw.slice(0, head_end)
+    body = raw.slice(head_end + 4, len(raw))
+  lines = head.split("\r\n")
+  first = lines[0].split(" ")
+  method = "GET"
+  path = "/"
+  if len(first) >= 2:
+    method = first[0]
+    path = first[1]
+  Request(method, path, body)
+  # Serialize and send one response.
+
+fn send_response(sock: ptr, resp: Response):
+  out = "HTTP/1.1 " + status_line(resp.status) + "\r\n"
+  out = out + "Content-Type: " + resp.content_type + "\r\n"
+  out = out + "Content-Length: " + str(len(resp.body)) + "\r\n"
+  out = out + "Connection: close\r\n\r\n"
+  out = out + resp.body
+  fang_tcp_send(sock, out)
+  # Serve forever on a port. handler is any fn value that takes a
+  # Request and returns a Response.
+
+export fn serve(handler: fn(Request) -> Response, port: int):
+  srv = fang_tcp_listen(port)
+  print(f"fang serving on http://localhost:{port}")
+  while true:
+    client = fang_tcp_accept(srv)
+    raw = fang_tcp_recv_http(client)
+    if len(raw) > 0:
+      req = parse_request(raw)
+      resp = handler(req)
+      send_response(client, resp)
+    fang_tcp_close(client)

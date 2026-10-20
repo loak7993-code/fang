@@ -554,6 +554,34 @@ fang_str* fang_input_line(void) {
 /* Networking                                                          */
 /* ------------------------------------------------------------------ */
 
+void* fang_tcp_listen(int64_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) fang_panic("socket creation failed", __FILE__, __LINE__);
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr*)&addr, sizeof addr) != 0) {
+        close(fd);
+        fang_panic("cannot bind to port (is it already in use?)", __FILE__, __LINE__);
+    }
+    if (listen(fd, 128) != 0) {
+        close(fd);
+        fang_panic("listen failed", __FILE__, __LINE__);
+    }
+    return (void*)(intptr_t)fd;
+}
+
+void* fang_tcp_accept(void* srv) {
+    int fd = (int)(intptr_t)srv;
+    int client = accept(fd, NULL, NULL);
+    if (client < 0) fang_panic("accept failed", __FILE__, __LINE__);
+    return (void*)(intptr_t)client;
+}
+
 void* fang_net_resolve(fang_str* host, int64_t port) {
     char portbuf[16];
     snprintf(portbuf, sizeof portbuf, "%lld", (long long)port);
@@ -601,6 +629,48 @@ fang_str* fang_tcp_recv_all(void* sock) {
         if (n < 0) fang_panic("tcp receive failed", __FILE__, __LINE__);
         if (n == 0) break;
         fang_sb_str_raw(sb, buf, n);
+    }
+    return fang_sb_build(sb);
+}
+
+/* Read one HTTP request: headers plus any Content-Length body. Returns
+   once the request is complete; does not wait for the peer to close. */
+fang_str* fang_tcp_recv_http(void* sock) {
+    int fd = (int)(intptr_t)sock;
+    fang_sb* sb = fang_sb_new();
+    char buf[16384];
+    int64_t header_end = -1;
+    int64_t content_length = 0;
+    for (;;) {
+        if (header_end < 0 || (int64_t)sb->len < header_end + 4 + content_length) {
+            ssize_t n = recv(fd, buf, sizeof buf, 0);
+            if (n < 0) fang_panic("tcp receive failed", __FILE__, __LINE__);
+            if (n == 0) break;
+            fang_sb_str_raw(sb, buf, n);
+        }
+        char* data = (char*)sb->data;
+        int64_t len = (int64_t)sb->len;
+        if (header_end < 0) {
+            for (int64_t i = 0; i + 3 < len; i++) {
+                if (data[i] == '\r' && data[i + 1] == '\n'
+                    && data[i + 2] == '\r' && data[i + 3] == '\n') {
+                    header_end = i;
+                    break;
+                }
+            }
+            if (header_end < 0) continue;
+            /* Find Content-Length in the header block (case-insensitive). */
+            for (int64_t i = 0; i + 15 < header_end; i++) {
+                if ((data[i] == 'c' || data[i] == 'C')
+                    && strncasecmp(data + i, "content-length:", 15) == 0) {
+                    int64_t j = i + 15;
+                    while (j < header_end && (data[j] == ' ' || data[j] == '\t')) j++;
+                    content_length = strtoll(data + j, NULL, 10);
+                    break;
+                }
+            }
+        }
+        if (len >= header_end + 4 + content_length) break;
     }
     return fang_sb_build(sb);
 }

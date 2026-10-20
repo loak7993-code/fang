@@ -238,3 +238,41 @@ fn main():
 | `tcp_recv(sock)` | `-> str` reads until close |
 | `tcp_close(sock)` | close |
 | `http_get(url)` | `-> str` response body |
+
+## server
+
+HTTP server in pure Fang. Accept loop, request parsing, response
+serialization. Single-threaded: one request at a time, like Python's
+`http.server`.
+
+```fang
+import server
+
+fn handler(req: Request):
+  if req.path == "/":
+    return server.html("<h1>hello</h1>")
+  elif req.path == "/api":
+    return server.json('{"ok": true}')
+  elif req.method == "POST" and req.path == "/echo":
+    return server.text("you sent: " + req.body)
+  return server.not_found()
+
+server.serve(handler, 8080)
+```
+
+The handler is any function value of type `fn(Request) -> Response`;
+function types are annotations now (`fn(A, B) -> C`).
+
+`Request` fields: `method`, `path`, `body` (all `str`).
+`Response` fields: `status`, `content_type`, `body`.
+
+| Function | Type |
+|----------|------|
+| `serve(handler, port)` | accept loop, blocks forever |
+| `respond(status, ctype, body)` | `-> Response` full control |
+| `html(body)` | `-> Response` 200 text/html |
+| `json(body)` | `-> Response` 200 application/json |
+| `text(body)` | `-> Response` 200 text/plain |
+| `not_found()` | `-> Response` 404 |
+
+Verified with curl: GET and POST (Content-Length bodies) both round-trip.

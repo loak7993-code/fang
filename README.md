@@ -149,6 +149,30 @@ fn main():
 Mobile and desktop apps link against the platform C libraries the same
 way the `extern` examples do.
 
+## Backend websites
+
+A web server is three lines plus your handler. The whole HTTP layer is
+pure Fang, no framework needed:
+
+```fang
+import server
+
+fn handler(req: Request):
+  if req.path == "/":
+    return server.html("<h1>hello from fang</h1>")
+  return server.not_found()
+
+server.serve(handler, 8080)
+```
+
+GET and POST both round-trip (verified with curl); the handler is a
+plain function value typed `fn(Request) -> Response`. See
+`examples/website.fang` for a full site with HTML, JSON, and health
+routes, and STDLIB.md for the `server` module reference.
+
+Same language, same binary, same performance story: kernels at boot,
+servers on the wire.
+
 ## Packages
 
 A package is a git repository with `mypkg.fang` at its root. There is no
