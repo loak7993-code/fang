@@ -175,6 +175,53 @@ fn parse_flags_with_prog_args(args: &[String]) -> Result<(String, BuildFlags, Ve
     Ok((file, flags, prog_args))
 }
 
+/// The runtime C source never changes between fang releases, so its
+/// object file is compiled once per (version, opt level) and reused.
+/// A release build of the runtime costs ~750 ms; this makes it free.
+fn cached_rt_object(release: bool) -> Result<PathBuf, String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let cc_version = output_of("cc", &["--version"]).unwrap_or_default();
+    let opt = if release { "-O3" } else { "-O0" };
+    let mut h = DefaultHasher::new();
+    RT_C.hash(&mut h);
+    RT_H.hash(&mut h);
+    cc_version.hash(&mut h);
+    opt.hash(&mut h);
+    let key = format!("{:016x}", h.finish());
+
+    let dir = std::env::temp_dir().join("fang-rt-cache");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create rt cache: {}", e))?;
+    let obj = dir.join(format!("fang_rt-{}.o", key));
+
+    if obj.exists() {
+        return Ok(obj);
+    }
+    let tmp = dir.join(format!(".fang_rt-{}.c", key));
+    let hdr = dir.join("fang_rt.h");
+    std::fs::write(&tmp, RT_C).map_err(|e| format!("cannot write rt source: {}", e))?;
+    // RT_H is part of the cache key, so this always matches the .c
+    // being compiled.
+    std::fs::write(&hdr, RT_H).map_err(|e| format!("cannot write rt header: {}", e))?;
+    let status = Command::new("cc")
+        .arg(opt)
+        .arg("-std=c11")
+        .arg("-I")
+        .arg(&dir)
+        .arg("-c")
+        .arg(&tmp)
+        .arg("-o")
+        .arg(&obj)
+        .status()
+        .map_err(|e| format!("cannot run cc for the runtime: {}", e))?;
+    let _ = std::fs::remove_file(&tmp);
+    if !status.success() {
+        return Err("runtime compilation failed".to_string());
+    }
+    Ok(obj)
+}
+
 /// Std units parsed once per program build. The Python bridge module
 /// is excluded: it carries externs that need libpython, so it loads
 /// only when explicitly imported.
@@ -323,6 +370,15 @@ fn render_error(e: &sema::SemaError, sources: &HashMap<String, String>, paths: &
     eprintln!("{} | {}^", pad, " ".repeat(caret_at));
 }
 
+/// Coarse phase timing, enabled with FANG_TIMING=1.
+fn phase_t(title: &str, t0: &mut std::time::Instant) {
+    if std::env::var("FANG_TIMING").is_ok() {
+        let d = t0.elapsed();
+        eprintln!("[timing] {:<10} {:>6.1} ms", title, d.as_secs_f64() * 1000.0);
+    }
+    *t0 = std::time::Instant::now();
+}
+
 fn analyze_program(units: &[SourceUnit], entry: &str) -> Result<Analysis, String> {
     let sources: Vec<(String, Module)> = units
         .iter()
@@ -412,7 +468,7 @@ fn compile_program(
         cmd.arg("-march=native");
     }
     if !flags.freestanding {
-        cmd.arg(build_dir.join("fang_rt.c"));
+        cmd.arg(cached_rt_object(flags.release)?);
     }
     if flags.python {
         for flag in py_cflags.split_whitespace() {
@@ -499,11 +555,15 @@ fn run_program(file: &str, flags: &BuildFlags, tag: &str, prog_args: &[String]) 
 }
 
 fn build_program(file: &str, flags: &BuildFlags) -> Result<PathBuf, String> {
+    let mut t0 = std::time::Instant::now();
     let units = load_program(file)?;
+    phase_t("parse", &mut t0);
     let entry = units.last().unwrap().name.clone();
     let a = analyze_program(&units, &entry)?;
+    phase_t("sema", &mut t0);
     let tag = format!("build-{}", std::process::id());
     let compiled = compile_program(&units, &a, &entry, flags, &tag)?;
+    phase_t("cc", &mut t0);
     // Absolute -o paths are honored as-is; anything else lands next to
     // the source with a .bin suffix.
     let out = match &flags.output {

@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.3.2] - 2026-10-20
+
+Compiles at rustc parity.
+
+### Fixed
+
+- The C runtime (`fang_rt.c`, ~750 ms at -O3 -march=native) was
+  recompiled from source on every build. It is now compiled once per
+  (runtime source, compiler, opt level) into a cached object file.
+  `fang build --release`: 822 ms -> 104 ms, first build only pays the
+  runtime compile. rustc -O on the same benchmark: 108 ms.
+- `fang run` cold start: 189 ms -> 74 ms.
+- Collection stamping leaked dead-module types through the
+  for-loop-binder and catch-type maps: `print("hi")` instantiated
+  json's struct, list, and dict templates. Now zero stamps for a
+  hello, and its generated C compiles in 35 ms at -O3 -march=native.
+- Phase timing behind `FANG_TIMING=1` (parse / sema / cc).
+
 ## [1.3.0] - 2026-10-20
 
 From scratch, in the language: TUI apps, emulators, and Python-style

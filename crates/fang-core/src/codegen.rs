@@ -698,9 +698,20 @@ impl<'a> Gen<'a> {
                 .filter(|((m, _), _)| self.reachable.contains(m.as_str()))
                 .map(|(_, t)| t.clone()),
         );
-        for v in self.a.for_binders.values() {
-            work.extend(v.iter().cloned());
-        }
+        work.extend(
+            self.a
+                .for_binders
+                .iter()
+                .filter(|((m, _), _)| self.reachable.contains(m.as_str()))
+                .flat_map(|(_, v)| v.iter().cloned()),
+        );
+        work.extend(
+            self.a
+                .catch_ty
+                .iter()
+                .filter(|((m, _), _)| self.reachable.contains(m.as_str()))
+                .map(|(_, t)| t.clone()),
+        );
         for t in self.a.consts.values() {
             work.push(match t {
                 ConstVal::Int(_) => Ty::Int,
