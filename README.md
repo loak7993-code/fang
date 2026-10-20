@@ -4,6 +4,12 @@
 
 # Fang
 
+[![course](https://img.shields.io/badge/learn-fang.dev-34d399)](https://loak7993-code.github.io/fang/)
+
+**The learning website lives at https://loak7993-code.github.io/fang/**
+built from `website/` in this repository: the full 18-lesson course,
+benchmarks with charts, cheat sheet, and install steps.
+
 **Looks like Python. Runs like C.**
 
 A small compiled language you can learn in an afternoon and ship

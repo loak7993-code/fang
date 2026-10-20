@@ -31,9 +31,9 @@ lesson() {
   fi
 }
 
-# The course array runs basics(7), dictionaries, structs, strings,
-# comprehensions, functions-as-values, errors, imports, extern C,
-# closures, then the final guessing game.
+# The course array runs basics(7), files, dictionaries, structs,
+# strings, comprehensions, functions-as-values, errors, imports,
+# extern C, closures, then the final guessing game.
 lesson 1 'hello, fang'
 lesson 2 'fang'
 lesson 3 '7'
@@ -41,16 +41,17 @@ lesson 4 '20'
 lesson 5 '4'
 lesson 6 '1'
 lesson 7 '2'
-lesson 8 'nova'
-lesson 9 '0.5'
-lesson 10 '1'
-lesson 11 'xs'
-lesson 12 '2'
-lesson 13 'the disk is full'
-lesson 14 '9.0'
-lesson 15 '4.0'
-lesson 16 'x'
-lesson 17 'correct!'
+lesson 8 'fang remembers'
+lesson 9 'nova'
+lesson 10 '0.5'
+lesson 11 '1'
+lesson 12 'xs'
+lesson 13 '2'
+lesson 14 'the disk is full'
+lesson 15 '9.0'
+lesson 16 '4.0'
+lesson 17 'x'
+lesson 18 'correct!'
 
 echo 0 > "$progress"
 out=$(printf 'nope\nquit\n' | "$FANG" learn 2>&1)

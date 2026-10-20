@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.2] - 2026-10-20
+
+The learning website: https://loak7993-code.github.io/fang
+
+### Added
+
+- `website/`: the Fang learning site (React + Vite, dark, Geist,
+  Phosphor). Home, full 18-lesson course browser, benchmark charts
+  from the real suite numbers, cheat sheet, install steps. Deployed
+  to GitHub Pages on every push by CI.
+- Course gap fixed: lesson 8 ("Talking to files") was missing since
+  the numbering jumped 7 to 9. The course is a real 18 lessons now.
+
 ## [1.4.1] - 2026-10-20
 
 The file extension is now `.fg` (was `.fang`). Every command,

@@ -4,3 +4,5 @@ Cargo.lock.orig
 *.leo.bin
 /leo_packages
 leo.lock
+/website/node_modules
+/website/dist
