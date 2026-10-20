@@ -16,12 +16,14 @@ import sys
 
 src = open(sys.argv[1]).read()
 outdir = sys.argv[2]
-prelude = "import json\nimport str\nimport math\n"
 i = 0
 for m in re.finditer(r"```(leo|leo-expect-error)\n(.*?)```", src, re.S):
     i += 1
     kind = "err" if m.group(1) == "leo-expect-error" else "run"
-    with open(f"{outdir}/{i:03d}_{kind}.leo", "w") as f:
+    # Blocks that use the Python bridge need --python to link.
+    needs_py = "import py" in m.group(2)
+    with open(f"{outdir}/{i:03d}_{kind}{'_py' if needs_py else ''}.leo", "w") as f:
+        prelude = "" if needs_py else "import json\nimport str\nimport math\n"
         f.write(prelude + m.group(2))
 print(i)
 PYEOF
@@ -29,9 +31,15 @@ PYEOF
 ok=0
 fail=0
 for f in "$tmp"/*.leo; do
-  kind=$(basename "$f" .leo)
-  kind="${kind##*_}"
-  if "$LEO" run "$f" >/dev/null 2>&1; then
+  base=$(basename "$f" .leo)
+  kind="${base##*_}"
+  if [[ "$kind" == "py" ]]; then
+    kind="run"
+    PYFLAG="--python"
+  else
+    PYFLAG=""
+  fi
+  if "$LEO" run "$f" $PYFLAG >/dev/null 2>&1; then
     if [ "$kind" = "err" ]; then
       fail=$((fail + 1))
       echo "FAIL $(basename "$f"): expected a compile error, it ran"
