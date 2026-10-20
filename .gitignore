@@ -6,3 +6,4 @@ Cargo.lock.orig
 leo.lock
 /website/node_modules
 /website/dist
+examples/program*.c

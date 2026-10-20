@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.5.0] - 2026-10-20
+
+Fang LLM: a GGUF inference engine, in Fang.
+
+### Added
+
+- `examples/llm.fg`: a complete GGUF inference engine for
+  qwen2-architecture models (Qwen2.5-0.5B verified). GGUF parsing,
+  GPT-2 BPE tokenizer with special-token handling, the full
+  transformer forward pass with GQA and KV cache, greedy and
+  temperature sampling, chat template. Generates correct text,
+  verified token-for-token against llama.cpp on the same model.
+- Runtime integer-dot kernels: activation vectors quantize to Q8_0
+  once per matvec (per 32-block scales, like llama.cpp), then
+  integer dot against Q5_0 / Q8_0 / Q4_K / Q6_K / F32 weights with
+  AVX2 madd. ~6x faster than the float-dequant path. Every kernel
+  verified element-exact against pure-Fang dequant references.
+- Compiler fixes found by the engine build: for-loop binders no
+  longer double-release their last value at function exit; string
+  literals inside index expressions now join the pool (previously
+  an undeclared-identifier C compile error).
+
 ## [1.4.2] - 2026-10-20
 
 The learning website: https://loak7993-code.github.io/fang

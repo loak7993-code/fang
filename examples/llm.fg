@@ -1,0 +1,621 @@
+# Fang LLM: a GGUF inference engine, in Fang.
+
+# fang run llm.fg -- model.gguf "prompt" [--n 128] [--temp 0.8]
+
+# qwen2 architecture, Q5_0 / Q8_0 / Q4_K / Q6_K / F32 tensors.
+
+import fs
+import str
+import os
+import math
+import time
+
+extern fn fang_llm_dot(t: int, blob: str, off: int, x: list[float], n: int) -> float from "fang_rt.h"
+
+extern fn fang_llm_row_bytes(t: int, n: int) -> int from "fang_rt.h"
+
+extern fn fang_llm_quant_q8(x: list[float], n: int) -> list[int] from "fang_rt.h"
+
+extern fn fang_llm_dot_q8(t: int, blob: str, off: int, qx: list[int], n: int) -> float from "fang_rt.h"
+
+extern fn fang_print_raw(s: str) from "fang_rt.h"
+
+extern fn fang_utf8_from_bytes(bytes: list[int]) -> str from "fang_rt.h"
+
+fn byte_at(s: str, i: int) -> int:
+  str.byte_at(s, i)
+
+fn u16_at(s: str, i: int) -> int:
+  byte_at(s, i) | byte_at(s, i + 1) << 8
+
+fn u32_at(s: str, i: int) -> int:
+  u16_at(s, i) | u16_at(s, i + 2) << 16
+
+fn u64_at(s: str, i: int) -> int:
+  u32_at(s, i) | u32_at(s, i + 4) << 32
+
+fn f32_at(s: str, i: int) -> float:
+  bits = u32_at(s, i)
+  sign = 1.0
+  if bits >= 2147483648:
+    sign = -1.0
+    bits = bits - 2147483648
+  exp = bits >> 23 & 255
+  man = bits & 8388607
+  if exp == 0:
+    if man == 0:
+      return sign * 0.0
+    return sign * man * 0.000000000000000000000000000000000000000000001401298464324817
+  if exp == 255:
+    return sign * (1.0 / 0.0)
+  sign * (man + 8388608) * math.pow(2.0, (exp - 127 - 23) * 1.0)
+  # ---- model ----
+
+struct Model:
+  blob: str
+  data_off: int
+  n_layers: int
+  hidden: int
+  n_heads: int
+  n_kv_heads: int
+  head_dim: int
+  ffn: int
+  vocab: int
+  rope_base: float
+  rms_eps: float
+  eos: int
+  vocab_str: list[str]
+  vocab_id: dict[str, int]
+  merges: dict[str, int]
+  tensor_off: dict[str, int]
+  tensor_type: dict[str, int]
+  tensor_row: dict[str, int]
+
+fn fp16_at(s: str, i: int) -> float:
+  h = u16_at(s, i)
+  sign = 1.0
+  if h >= 32768:
+    sign = -1.0
+    h = h - 32768
+  exp = h >> 10 & 31
+  man = h & 1023
+  if exp == 0:
+    if man == 0:
+      return sign * 0.0
+    return sign * man * 0.00000005960464477539063
+  if exp == 31:
+    return sign * (1.0 / 0.0)
+  sign * (man + 1024) * math.pow(2.0, (exp - 25) * 1.0)
+
+let T_U8 = 0
+
+let T_I8 = 1
+
+let T_U16 = 2
+
+let T_I16 = 3
+
+let T_U32 = 4
+
+let T_I32 = 5
+
+let T_F32 = 6
+
+let T_BOOL = 7
+
+let T_STR = 8
+
+let T_ARR = 9
+
+let T_U64 = 10
+
+let T_I64 = 11
+
+let T_F64 = 12
+
+fn fixed_size(t: int) -> int:
+  if t == T_U8 or t == T_I8 or t == T_BOOL:
+    return 1
+  if t == T_U16 or t == T_I16:
+    return 2
+  if t == T_U32 or t == T_I32 or t == T_F32:
+    return 4
+  8
+
+fn skip_value(b: str, i: int, t: int) -> int:
+  if t == T_STR:
+    n = u64_at(b, i)
+    return i + 8 + n
+  if t == T_ARR:
+    et = u32_at(b, i)
+    n = u64_at(b, i + 4)
+    j = i + 12
+    for k in 0..n:
+      j = skip_value(b, j, et)
+    return j
+  return i + fixed_size(t)
+
+fn load_model(path: str) -> Model:
+  b = fs.read_file(path)
+  vocab_str: list[str] = []
+  vocab_id: dict[str, int] = {}
+  merges: dict[str, int] = {}
+  tensor_off: dict[str, int] = {}
+  tensor_type: dict[str, int] = {}
+  tensor_row: dict[str, int] = {}
+  m = Model(b, 0, 24, 896, 14, 2, 64, 4864, 151936, 1000000.0, 0.000001, 151645, vocab_str, vocab_id, merges, tensor_off, tensor_type, tensor_row)
+  if b.slice(0, 4) != "GGUF":
+    print("not a GGUF file")
+    os.exit(1)
+  n_tensors = u64_at(b, 8)
+  n_kv = u64_at(b, 16)
+  i = 24
+  for kv in 0..n_kv:
+    klen = u64_at(b, i)
+    key = b.slice(i + 8, i + 8 + klen)
+    i = i + 8 + klen
+    t = u32_at(b, i)
+    i = i + 4
+    if t == T_U64 or t == T_I64 or t == T_F64:
+      val = u64_at(b, i)
+      i = i + 8
+      if key == "qwen2.block_count":
+        m.n_layers = val
+      elif key == "qwen2.embedding_length":
+        m.hidden = val
+      elif key == "qwen2.attention.head_count":
+        m.n_heads = val
+      elif key == "qwen2.attention.head_count_kv":
+        m.n_kv_heads = val
+      elif key == "tokenizer.ggml.eos_token_id":
+        m.eos = val
+    elif t == T_U32 or t == T_I32:
+      val = u32_at(b, i)
+      i = i + 4
+      if key == "tokenizer.ggml.eos_token_id":
+        m.eos = val
+    elif t == T_F32:
+      if key == "qwen2.rope.freq_base":
+        m.rope_base = f32_at(b, i)
+      if key == "qwen2.attention.layer_norm_rms_epsilon":
+        m.rms_eps = f32_at(b, i)
+      i = i + 4
+    elif t == T_STR:
+      n = u64_at(b, i)
+      i = i + 8 + n
+    elif t == T_ARR:
+      et = u32_at(b, i)
+      n = u64_at(b, i + 4)
+      i = i + 12
+      if key == "tokenizer.ggml.tokens":
+        for k in 0..n:
+          sl = u64_at(b, i)
+          piece = b.slice(i + 8, i + 8 + sl)
+          m.vocab_str.push(piece)
+          i = i + 8 + sl
+      elif key == "tokenizer.ggml.merges":
+        for k in 0..n:
+          sl = u64_at(b, i)
+          m.merges[b.slice(i + 8, i + 8 + sl)] = k
+          i = i + 8 + sl
+      else:
+        for k in 0..n:
+          i = skip_value(b, i, et)
+    else:
+      i = i + fixed_size(t)
+      # tensor table
+  raw_off: dict[str, int] = {}
+  for t_i in 0..n_tensors:
+    nlen = u64_at(b, i)
+    name = b.slice(i + 8, i + 8 + nlen)
+    i = i + 8 + nlen
+    nd = u32_at(b, i)
+    i = i + 4
+    ne0 = u64_at(b, i)
+    i = i + 8 * nd
+    tt = u32_at(b, i)
+    i = i + 4
+    toff = u64_at(b, i)
+    i = i + 8
+    raw_off[name] = toff
+    m.tensor_type[name] = tt
+    m.tensor_row[name] = ne0
+  m.data_off = (i + 31) / 32 * 32
+  for name in raw_off.keys():
+    m.tensor_off[name] = m.data_off + raw_off[name]
+  m.head_dim = m.hidden / m.n_heads
+  for k in 0..len(m.vocab_str):
+    m.vocab_id[m.vocab_str[k]] = k
+  m
+  # ---- tokenizer ----
+
+let char_table: list[str] = []
+
+fn init_char_cache():
+  for cp in 0..70000:
+    char_table.push(cp_str(cp))
+
+fn cp_str(cp: int) -> str:
+  if cp < 128:
+    return utf8_of([cp])
+  if cp < 2048:
+    return utf8_of([192 | cp >> 6, 128 | cp & 63])
+  if cp < 65536:
+    return utf8_of([224 | cp >> 12, 128 | cp >> 6 & 63, 128 | cp & 63])
+  utf8_of([240 | cp >> 18, 128 | cp >> 12 & 63, 128 | cp >> 6 & 63, 128 | cp & 63])
+
+fn utf8_of(bytes: list[int]) -> str:
+  fang_utf8_from_bytes(bytes)
+
+fn b2u(b: int) -> str:
+  if b >= 33 and b <= 126:
+    return char_table[b]
+  if b >= 161 and b <= 172:
+    return char_table[b]
+  if b >= 174 and b <= 255:
+    return char_table[b]
+  char_table[256 + b]
+
+fn bpe_word(m: Model, word: str) -> list[int]:
+  syms: list[str] = []
+  for i in 0..len(word):
+    syms.push(word.slice(i, i + 1))
+  while true:
+    best_rank = -1
+    best_i = 0
+    for i in 0..len(syms) - 1:
+      r = m.merges[syms[i] + " " + syms[i + 1]]
+      if r != 0 and (best_rank < 0 or r < best_rank):
+        best_rank = r
+        best_i = i
+    if best_rank < 0:
+      break
+    new_syms: list[str] = []
+    for i in 0..len(syms):
+      if i == best_i:
+        new_syms.push(syms[i] + syms[i + 1])
+      elif i == best_i + 1:
+        pass
+      else:
+        new_syms.push(syms[i])
+    syms = new_syms
+  ids: list[int] = []
+  for s in syms:
+    ids.push(m.vocab_id[s])
+  ids
+
+fn bpe_encode(m: Model, text: str) -> list[int]:
+  # Special tokens split first: <|im_start|> and <|im_end|> are single
+  # vocab entries BPE can never build from bytes.
+  ids: list[int] = []
+  parts: list[str] = []
+  rest = text
+  while true:
+    a = str.find_from(rest, 0, "<|im_start|>")
+    b = str.find_from(rest, 0, "<|im_end|>")
+    cut = -1
+    which = 0
+    if a >= 0 and (b < 0 or a < b):
+      cut = a
+      which = 151644
+    elif b >= 0:
+      cut = b
+      which = 151645
+    if cut < 0:
+      parts.push(rest)
+      break
+    parts.push(rest.slice(0, cut))
+    ids.push(which)
+    rest = rest.slice(cut + 13, len(rest))
+  for part in parts:
+    for t in bpe_text(m, part):
+      ids.push(t)
+  ids
+
+fn bpe_text(m: Model, text: str) -> list[int]:
+  ids: list[int] = []
+  cur = ""
+  for i in 0..len(text):
+    c = text.slice(i, i + 1)
+    if c == " ":
+      if len(cur) > 0:
+        for t in bpe_word(m, cur):
+          ids.push(t)
+      cur = "Ġ"
+    elif c == "\n":
+      if len(cur) > 0:
+        for t in bpe_word(m, cur):
+          ids.push(t)
+      cur = "Ċ"
+    else:
+      cur = cur + b2u(byte_at(c, 0))
+  if len(cur) > 0:
+    for t in bpe_word(m, cur):
+      ids.push(t)
+  ids
+
+fn unmap(text: str) -> str:
+  out: list[int] = []
+  i = 0
+  while i < len(text):
+    c = byte_at(text, i)
+    if c < 128:
+      out.push(c)
+      i = i + 1
+    elif c == 196 or c == 197:
+      # U+0100..U+017F: mapped byte = codepoint - 256
+      cp = (c & 31) << 6 | byte_at(text, i + 1) & 63
+      out.push(cp - 256)
+      i = i + 2
+    else:
+      out.push(c)
+      i = i + 1
+  utf8_of(out)
+  # ---- forward pass ----
+
+struct Cache:
+  k: list[list[float]]
+  v: list[list[float]]
+
+fn make_cache(m: Model, ctx: int) -> Cache:
+  k_layers: list[list[float]] = []
+  v_layers: list[list[float]] = []
+  for layer in 0..m.n_layers:
+    kbuf: list[float] = []
+    vbuf: list[float] = []
+    for i in 0..ctx * m.n_kv_heads * m.head_dim:
+      kbuf.push(0.0)
+      vbuf.push(0.0)
+    k_layers.push(kbuf)
+    v_layers.push(vbuf)
+  Cache(k_layers, v_layers)
+
+fn rms_norm(x: list[float], w: list[float], eps: float) -> list[float]:
+  s = 0.0
+  for i in 0..len(x):
+    s = s + x[i] * x[i]
+  inv = 1.0 / math.sqrt(s / len(x) + eps)
+  out: list[float] = []
+  for i in 0..len(x):
+    out.push(w[i] * x[i] * inv)
+  out
+
+fn load_f32_row(m: Model, name: str, row: int) -> list[float]:
+  t = m.tensor_type[name]
+  off = m.tensor_off[name] + row * fang_llm_row_bytes(t, m.tensor_row[name])
+  n = m.tensor_row[name]
+  out: list[float] = []
+  if t == 0:
+    for i in 0..n:
+      out.push(f32_at(m.blob, off + i * 4))
+  elif t == 6:
+    # Q5_0: 22-byte blocks of 32
+    for blk in 0..n / 32:
+      bo = off + blk * 22
+      d = fp16_at(m.blob, bo)
+      qh = u32_at(m.blob, bo + 2)
+      for j in 0..16:
+        xh0 = qh >> j << 4 & 16
+        xh1 = qh >> (j + 12) & 16
+        qs = byte_at(m.blob, bo + 6 + j)
+        out.push(((qs & 15 | xh0) - 16) * d)
+      for j in 0..16:
+        xh1 = qh >> (j + 12) & 16
+        qs = byte_at(m.blob, bo + 6 + j)
+        out.push(((qs >> 4 | xh1) - 16) * d)
+  elif t == 8:
+    # Q8_0: 34-byte blocks of 32
+    for blk in 0..n / 32:
+      bo = off + blk * 34
+      d = fp16_at(m.blob, bo)
+      for j in 0..32:
+        q = byte_at(m.blob, bo + 2 + j)
+        if q >= 128:
+          q = q - 256
+        out.push(q * d)
+  else:
+    print("load_row: unsupported type", t, "for", name)
+    os.exit(1)
+  out
+
+fn matvec(m: Model, name: str, x: list[float], rows: int) -> list[float]:
+  t = m.tensor_type[name]
+  row_n = m.tensor_row[name]
+  rb = fang_llm_row_bytes(t, row_n)
+  base = m.tensor_off[name]
+  # Quantize the activation once, then integer-dot every row.
+  qx = fang_llm_quant_q8(x, row_n)
+  out: list[float] = []
+  for r in 0..rows:
+    out.push(fang_llm_dot_q8(t, m.blob, base + r * rb, qx, row_n))
+  out
+
+fn matvec_bias(m: Model, wname: str, bname: str, x: list[float], rows: int) -> list[float]:
+  out = matvec(m, wname, x, rows)
+  bias = load_f32_row(m, bname, 0)
+  for i in 0..rows:
+    out[i] = out[i] + bias[i]
+  out
+
+fn softmax_inplace(x: list[float]):
+  mx = x[0]
+  for i in 1..len(x):
+    if x[i] > mx:
+      mx = x[i]
+  s = 0.0
+  for i in 0..len(x):
+    x[i] = math.exp(x[i] - mx)
+    s = s + x[i]
+  for i in 0..len(x):
+    x[i] = x[i] / s
+
+let rope_freq: list[float] = []
+
+fn init_rope(m: Model):
+  for i in 0..m.head_dim / 2:
+    rope_freq.push(math.pow(m.rope_base, -2.0 * i / m.head_dim))
+
+fn apply_rope(x: list[float], base_off: int, dim: int, pos: int):
+  half = dim / 2
+  for i in 0..half:
+    ang = pos * rope_freq[i]
+    c = math.cos(ang)
+    s = math.sin(ang)
+    x1 = x[base_off + i]
+    x2 = x[base_off + half + i]
+    x[base_off + i] = x1 * c - x2 * s
+    x[base_off + half + i] = x2 * c + x1 * s
+
+fn forward(m: Model, cache: Cache, token: int, pos: int) -> list[float]:
+  h = load_f32_row(m, "token_embd.weight", token)
+  kv_dim = m.n_kv_heads * m.head_dim
+  q_span = m.n_heads / m.n_kv_heads
+  for layer in 0..m.n_layers:
+    p = "blk." + str(layer) + "."
+    xn = rms_norm(h, load_f32_row(m, p + "attn_norm.weight", 0), m.rms_eps)
+    q = matvec_bias(m, p + "attn_q.weight", p + "attn_q.bias", xn, m.hidden)
+    k = matvec_bias(m, p + "attn_k.weight", p + "attn_k.bias", xn, kv_dim)
+    v = matvec_bias(m, p + "attn_v.weight", p + "attn_v.bias", xn, kv_dim)
+    for head in 0..m.n_heads:
+      apply_rope(q, head * m.head_dim, m.head_dim, pos)
+    for kvh in 0..m.n_kv_heads:
+      apply_rope(k, kvh * m.head_dim, m.head_dim, pos)
+    koff = pos * kv_dim
+    for i in 0..kv_dim:
+      cache.k[layer][koff + i] = k[i]
+      cache.v[layer][koff + i] = v[i]
+    attn_out: list[float] = []
+    scale = 1.0 / math.sqrt(m.head_dim * 1.0)
+    for head in 0..m.n_heads:
+      kvh = head / q_span
+      scores: list[float] = []
+      for t in 0..pos + 1:
+        sk = 0.0
+        for i in 0..m.head_dim:
+          sk = sk + q[head * m.head_dim + i] * cache.k[layer][t * kv_dim + kvh * m.head_dim + i]
+        scores.push(sk * scale)
+      softmax_inplace(scores)
+      for i in 0..m.head_dim:
+        acc = 0.0
+        for t in 0..pos + 1:
+          acc = acc + scores[t] * cache.v[layer][t * kv_dim + kvh * m.head_dim + i]
+        attn_out.push(acc)
+    proj = matvec(m, p + "attn_output.weight", attn_out, m.hidden)
+    for i in 0..m.hidden:
+      h[i] = h[i] + proj[i]
+    xn = rms_norm(h, load_f32_row(m, p + "ffn_norm.weight", 0), m.rms_eps)
+    gate = matvec(m, p + "ffn_gate.weight", xn, m.ffn)
+    up = matvec(m, p + "ffn_up.weight", xn, m.ffn)
+    act: list[float] = []
+    for i in 0..m.ffn:
+      g = gate[i]
+      act.push(g / (1.0 + math.exp(-g)) * up[i])
+    down = matvec(m, p + "ffn_down.weight", act, m.hidden)
+    for i in 0..m.hidden:
+      h[i] = h[i] + down[i]
+  h = rms_norm(h, load_f32_row(m, "output_norm.weight", 0), m.rms_eps)
+  matvec(m, "output.weight", h, m.vocab)
+  # ---- sampling ----
+
+fn sample_greedy(logits: list[float]) -> int:
+  best = 0
+  bv = logits[0]
+  for i in 1..len(logits):
+    if logits[i] > bv:
+      bv = logits[i]
+      best = i
+  best
+
+fn sample_temp(logits: list[float], temp: float) -> int:
+  mx = logits[0]
+  for i in 1..len(logits):
+    if logits[i] > mx:
+      mx = logits[i]
+  top: list[int] = []
+  used: list[int] = []
+  for k in 0..40:
+    best = -1
+    bv = -1000000000000000019884624838656.0
+    for i in 0..len(logits):
+      seen = false
+      for j in used:
+        if j == i:
+          seen = true
+      if not seen and logits[i] > bv:
+        bv = logits[i]
+        best = i
+    if best >= 0:
+      top.push(best)
+      used.push(best)
+  total = 0.0
+  probs: list[float] = []
+  for k in 0..len(top):
+    p = math.exp((logits[top[k]] - mx) / temp)
+    probs.push(p)
+    total = total + p
+  r = math.random() * total
+  acc = 0.0
+  for k in 0..len(top):
+    acc = acc + probs[k]
+    if r <= acc:
+      return top[k]
+  top[len(top) - 1]
+  # ---- main ----
+
+fn main():
+  args = os.args()
+  model_path = ""
+  prompt = "hello"
+  n_gen = 48
+  temp = 0.0
+  i = 1
+  while i < len(args):
+    if args[i] == "--n":
+      n_gen = str.to_int(args[i + 1])
+      i = i + 2
+    elif args[i] == "--temp":
+      temp = str.to_float(args[i + 1])
+      i = i + 2
+    elif model_path == "":
+      model_path = args[i]
+      i = i + 1
+    elif prompt == "hello":
+      prompt = args[i]
+      i = i + 1
+    else:
+      i = i + 1
+  if model_path == "":
+    print("usage: fang run llm.fg -- model.gguf \"prompt\" [--n 128] [--temp 0.8]")
+    os.exit(1)
+  t_load = time.now()
+  m = load_model(model_path)
+  print("loaded", model_path, "in", time.now() - t_load, "s: layers", m.n_layers, "hidden", m.hidden, "vocab", m.vocab)
+  cache = make_cache(m, 512)
+  init_char_cache()
+  init_rope(m)
+  chat = "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n"
+  ids = bpe_encode(m, chat)
+  print("prompt:", len(ids), "tokens")
+  t0 = time.now()
+  logits: list[float] = []
+  pos = 0
+  for tok in ids:
+    logits = forward(m, cache, tok, pos)
+    pos = pos + 1
+  last = sample_greedy(logits)
+  gen = 0
+  while gen < n_gen:
+    if last == m.eos:
+      break
+    fang_print_raw(unmap(m.vocab_str[last]))
+    logits = forward(m, cache, last, pos)
+    pos = pos + 1
+    if temp > 0.0:
+      last = sample_temp(logits, temp)
+    else:
+      last = sample_greedy(logits)
+    gen = gen + 1
+  print("")
+  dt = time.now() - t0
+  if dt > 0:
+    print("generated", gen, "tokens in", dt, "s =", gen / dt, "tok/s")

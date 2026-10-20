@@ -2359,21 +2359,7 @@ impl<'a> FnGen<'a> {
                             let bt = binder_tys.get(i).cloned().unwrap_or(Ty::Err);
                             self.declare(b, bt.clone(), g);
                             let field = self.lookup(b).unwrap().field.clone();
-                            // release the previous iteration's value (NULL-safe)
-                            match &bt {
-                                t if g.is_rc(t) => {
-                                    let d = g.decref_stmt(&format!("f.{}", field), t);
-                                    if !d.is_empty() {
-                                        self.w(&d);
-                                    }
-                                }
-                                Ty::Struct(m) => {
-                                    for sd in g.struct_field_decref(&format!("f.{}", field), m) {
-                                        self.w(&sd);
-                                    }
-                                }
-                                _ => {}
-                            }
+                            // Released at the end of each body below.
                             let part = if i == 0 { "__p.a" } else { "__p.b" };
                             self.w(&format!("f.{} = {};", field, part));
                             if g.is_rc(&bt) {
@@ -2385,20 +2371,8 @@ impl<'a> FnGen<'a> {
                     let b = &binders[0];
                     self.declare(b, elem.clone(), g);
                     let field = self.lookup(b).unwrap().field.clone();
-                    match &elem {
-                        t if g.is_rc(t) => {
-                            let d = g.decref_stmt(&format!("f.{}", field), t);
-                            if !d.is_empty() {
-                                self.w(&d);
-                            }
-                        }
-                        Ty::Struct(m) => {
-                            for sd in g.struct_field_decref(&format!("f.{}", field), m) {
-                                self.w(&sd);
-                            }
-                        }
-                        _ => {}
-                    }
+                    // The binder is released at the end of each body
+                    // below; no pre-assignment decref here.
                     self.w(&format!("f.{} = {}->elems[__j];", field, it_var));
                     match &elem {
                         t if g.is_rc(t) => {
@@ -2434,6 +2408,25 @@ impl<'a> FnGen<'a> {
                 }
                 self.indent -= 1;
                 self.w("}");
+                // The binder slot still points at the last iterated
+                // value, which the per-iteration cleanup already
+                // released. Clear it so the function-exit cleanup is a
+                // no-op instead of a second decref.
+                for b in binders {
+                    if let Some(v) = self.scopes.last().unwrap().get(b) {
+                        let field = v.field.clone();
+                        match &v.ty {
+                            t if g.is_rc(t) => {
+                                self.w(&format!("f.{} = NULL;", field));
+                            }
+                            Ty::Struct(m) => {
+                                let cty = g.ctype(&Ty::Struct(m.clone()));
+                                self.w(&format!("f.{} = ({}){{0}};", field, cty));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 // The iterator is ours to release only when the expression
                 // produced a fresh list (items(), literals, slices); a
                 // variable read stays owned by the variable.
@@ -4212,7 +4205,11 @@ fn collect_expr_strs(e: &Expr, order: &mut Vec<String>) {
                 collect_expr_strs(a, order);
             }
         }
-        ExprKind::Field(r, _) | ExprKind::Index(r, _) => collect_expr_strs(r, order),
+        ExprKind::Field(r, _) => collect_expr_strs(r, order),
+        ExprKind::Index(r, idx) => {
+            collect_expr_strs(r, order);
+            collect_expr_strs(idx, order);
+        }
         ExprKind::Slice(r, s, en) => {
             collect_expr_strs(r, order);
             if let Some(x) = s {

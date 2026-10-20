@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <termios.h>
+#include <math.h>
 #include <poll.h>
 
 static void fang_sb_str_raw(fang_sb* sb, const char* data, int64_t len);
@@ -690,6 +691,462 @@ fang_str* fang_tcp_recv_http(void* sock) {
 
 void fang_tcp_close(void* sock) {
     close((int)(intptr_t)sock);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* LLM inference kernels: row dot products against a float vector.    */
+/* Weights live in a read-only blob (the GGUF file); x is a list of   */
+/* doubles. One kernel per quant format, AVX2+FMA when available.     */
+/* ------------------------------------------------------------------ */
+
+#include <immintrin.h>
+
+static inline float fang_fp16_to_fp32(uint16_t h) {
+    /* IEEE 754 half -> float via bit manipulation. */
+    uint32_t sign = (uint32_t)(h & 0x8000) << 16;
+    uint32_t exp  = (h >> 10) & 0x1f;
+    uint32_t man  = h & 0x3ff;
+    uint32_t bits;
+    if (exp == 0) {
+        if (man == 0) { bits = sign; }
+        else {
+            /* subnormal: normalize */
+            int e = -1;
+            uint32_t m = man;
+            do { m <<= 1; e++; } while (!(m & 0x400));
+            bits = sign | ((127 - 15 - e) << 23) | ((m & 0x3ff) << 13);
+        }
+    } else if (exp == 0x1f) {
+        bits = sign | 0x7f800000 | (man << 13);
+    } else {
+        bits = sign | ((exp - 15 + 127) << 23) | (man << 13);
+    }
+    float out;
+    memcpy(&out, &bits, 4);
+    return out;
+}
+
+static inline double fang_dot_pairs(const float* w, const double* xv, int64_t n) {
+#if defined(__AVX2__) && defined(__FMA__)
+    __m256 acc8 = _mm256_setzero_ps();
+    __m128 acc4 = _mm_setzero_ps();
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        __m128 la = _mm_cvtpd_ps(_mm_loadu_pd(&xv[i]));
+        __m128 lb = _mm_cvtpd_ps(_mm_loadu_pd(&xv[i + 2]));
+        __m128 ha = _mm_cvtpd_ps(_mm_loadu_pd(&xv[i + 4]));
+        __m128 hb = _mm_cvtpd_ps(_mm_loadu_pd(&xv[i + 6]));
+        __m128 lo = _mm_movelh_ps(la, lb); /* x0 x1 x2 x3 */
+        __m128 hi = _mm_movelh_ps(ha, hb); /* x4 x5 x6 x7 */
+        __m256 x8 = _mm256_insertf128_ps(_mm256_castps128_ps256(lo), hi, 1);
+        acc8 = _mm256_fmadd_ps(_mm256_loadu_ps(&w[i]), x8, acc8);
+    }
+    float sums[8];
+    _mm256_storeu_ps(sums, acc8);
+    float accs = sums[0]+sums[1]+sums[2]+sums[3]+sums[4]+sums[5]+sums[6]+sums[7];
+    double total = accs;
+    for (; i < n; i++) total += (double)w[i] * xv[i];
+    return total;
+#else
+    double total = 0;
+    for (int64_t i = 0; i < n; i++) total += (double)w[i] * xv[i];
+    return total;
+#endif
+}
+
+static inline double fang_dot_q5_0_row(const uint8_t* row, const double* xv, int64_t n) {
+    /* block: fp16 d, qh[4], qs[16]; 32 elems per block, 22 bytes */
+    const int64_t nb = n / 32;
+    float w[32];
+    double total = 0;
+    for (int64_t b = 0; b < nb; b++) {
+        const uint8_t* blk = row + b * 22;
+        float d = fang_fp16_to_fp32((uint16_t)(blk[0] | (blk[1] << 8)));
+        uint32_t qh = (uint32_t)(blk[2] | (blk[3] << 8) | ((uint32_t)blk[4] << 16) | ((uint32_t)blk[5] << 24));
+        const uint8_t* qs = blk + 6;
+        for (int j = 0; j < 16; j++) {
+            uint8_t xh0 = (uint8_t)(((qh >> (j + 0)) << 4) & 0x10);
+            uint8_t xh1 = (uint8_t)(((qh >> (j + 12)) & 0x10));
+            int32_t x0 = ((qs[j] & 0x0F) | xh0) - 16;
+            int32_t x1 = ((qs[j] >> 4) | xh1) - 16;
+            w[j] = x0 * d;
+            w[j + 16] = x1 * d;
+        }
+        total += fang_dot_pairs(w, xv + b * 32, 32);
+    }
+    return total;
+}
+
+static inline double fang_dot_q8_0_row(const uint8_t* row, const double* xv, int64_t n) {
+    /* block: fp16 d, qs[32] int8; 34 bytes */
+    const int64_t nb = n / 32;
+    float w[32];
+    double total = 0;
+    for (int64_t b = 0; b < nb; b++) {
+        const uint8_t* blk = row + b * 34;
+        float d = fang_fp16_to_fp32((uint16_t)(blk[0] | (blk[1] << 8)));
+        const int8_t* qs = (const int8_t*)(blk + 2);
+        for (int j = 0; j < 32; j++) w[j] = (float)qs[j] * d;
+        total += fang_dot_pairs(w, xv + b * 32, 32);
+    }
+    return total;
+}
+
+static inline void fang_get_scale_min_k4(int j, const uint8_t* q, uint8_t* d, uint8_t* m) {
+    if (j < 4) {
+        *d = q[j] & 63; *m = q[j + 4] & 63;
+    } else {
+        *d = (uint8_t)((q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4));
+        *m = (uint8_t)((q[j + 4] >> 4) | ((q[j - 0] >> 6) << 4));
+    }
+}
+
+static inline double fang_dot_q4_K_row(const uint8_t* row, const double* xv, int64_t n) {
+    /* block: fp16 d, fp16 dmin, scales[12], qs[128]; 256 elems, 144 bytes */
+    const int64_t nb = n / 256;
+    float w[256];
+    double total = 0;
+    for (int64_t b = 0; b < nb; b++) {
+        const uint8_t* blk = row + b * 144;
+        float d   = fang_fp16_to_fp32((uint16_t)(blk[0] | (blk[1] << 8)));
+        float dmn = fang_fp16_to_fp32((uint16_t)(blk[2] | (blk[3] << 8)));
+        const uint8_t* scales = blk + 4;
+        const uint8_t* q = blk + 16;
+        int is = 0;
+        for (int j = 0; j < 256; j += 64) {
+            uint8_t sc, m;
+            fang_get_scale_min_k4(is + 0, scales, &sc, &m);
+            float d1 = d * sc, m1 = dmn * m;
+            fang_get_scale_min_k4(is + 1, scales, &sc, &m);
+            float d2 = d * sc, m2 = dmn * m;
+            for (int l = 0; l < 32; l++) w[j + l] = d1 * (q[l] & 0xF) - m1;
+            for (int l = 0; l < 32; l++) w[j + 32 + l] = d2 * (q[l] >> 4) - m2;
+            q += 32; is += 2;
+        }
+        total += fang_dot_pairs(w, xv + b * 256, 256);
+    }
+    return total;
+}
+
+static inline double fang_dot_q6_K_row(const uint8_t* row, const double* xv, int64_t n) {
+    /* block: ql[128], qh[64], scales[16] int8, fp16 d; 256 elems, 210 bytes */
+    const int64_t nb = n / 256;
+    float w[256];
+    double total = 0;
+    for (int64_t b = 0; b < nb; b++) {
+        const uint8_t* blk = row + b * 210;
+        const uint8_t* ql = blk;
+        const uint8_t* qh = blk + 128;
+        const int8_t* sc = (const int8_t*)(blk + 192);
+        float d = fang_fp16_to_fp32((uint16_t)(blk[208] | (blk[209] << 8)));
+        for (int nn = 0; nn < 256; nn += 128) {
+            for (int l = 0; l < 32; l++) {
+                int is = l / 16;
+                int8_t q1 = (int8_t)((ql[l + 0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
+                int8_t q2 = (int8_t)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+                int8_t q3 = (int8_t)((ql[l + 0] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32;
+                int8_t q4 = (int8_t)((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32;
+                w[nn + l + 0]  = d * sc[is + 0] * q1;
+                w[nn + l + 32] = d * sc[is + 2] * q2;
+                w[nn + l + 64] = d * sc[is + 4] * q3;
+                w[nn + l + 96] = d * sc[is + 6] * q4;
+            }
+            ql += 64; qh += 32; sc += 8;
+        }
+        total += fang_dot_pairs(w, xv + b * 256, 256);
+    }
+    return total;
+}
+
+static inline double fang_dot_f32_row(const uint8_t* row, const double* xv, int64_t n) {
+    float w[8];
+    double total = 0;
+    int64_t i = 0;
+    while (i < n) {
+        int64_t chunk = n - i < 8 ? n - i : 8;
+        for (int64_t k = 0; k < chunk; k++) {
+            uint32_t bits = (uint32_t)row[(i + k) * 4] | ((uint32_t)row[(i + k) * 4 + 1] << 8)
+                         | ((uint32_t)row[(i + k) * 4 + 2] << 16) | ((uint32_t)row[(i + k) * 4 + 3] << 24);
+            memcpy(&w[k], &bits, 4);
+        }
+        total += fang_dot_pairs(w, xv + i, chunk);
+        i += chunk;
+    }
+    return total;
+}
+
+/* ABI-compatible view of the generated list<double> layout. */
+typedef struct { int64_t rc, len, cap; double* elems; } fang_f64_list_view;
+
+/* Public row-dot API: blob + byte offset of the row, vector, element count. */
+double fang_llm_dot(int64_t ggml_type, fang_str* blob, int64_t off, void* xv_, int64_t n) {
+    const uint8_t* base = (const uint8_t*)blob->bytes + off;
+    const double* xv = ((const fang_f64_list_view*)xv_)->elems;
+    switch (ggml_type) {
+        case 6:  return fang_dot_q5_0_row(base, xv, n);
+        case 8:  return fang_dot_q8_0_row(base, xv, n);
+        case 12: return fang_dot_q4_K_row(base, xv, n);
+        case 14: return fang_dot_q6_K_row(base, xv, n);
+        case 0:  return fang_dot_f32_row(base, xv, n);
+        default: fang_panic("unsupported tensor quant type", __FILE__, __LINE__);
+    }
+    return 0;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Integer dot kernels: quantize the activation vector once to Q8_0, */
+/* then integer dot against quantized weights. This is the llama.cpp */
+/* approach; it avoids dequantizing weights to float entirely.       */
+/* ------------------------------------------------------------------ */
+
+typedef struct { int64_t rc, len, cap; int64_t* elems; } fang_i64_list_view;
+
+static inline uint16_t fang_fp32_to_fp16(float f) {
+    /* round-to-nearest fp32 -> fp16 via float math and bit fixups */
+    if (f != f) return 0x7E00;
+    float a = f < 0 ? -f : f;
+    int sign = f < 0 ? 0x8000 : 0;
+    if (a > 65504.0f) return (uint16_t)(sign | 0x7C00);
+    if (a < 6.103515625e-05f) {
+        /* subnormal or zero */
+        int sub = (int)(a / 5.9604644775390625e-08f + 0.5f);
+        return (uint16_t)(sign | sub);
+    }
+    int e;
+    float m = frexpf(a, &e);  /* a = m * 2^e, 0.5 <= m < 1 */
+    int exp16 = (e - 1) + 15;
+    int man = (int)((m - 0.5f) * 2048.0f + 0.5f);
+    if (man > 1023) { man = 0; exp16 += 1; }
+    if (exp16 > 30) return (uint16_t)(sign | 0x7C00);
+    return (uint16_t)(sign | (exp16 << 10) | man);
+}
+
+/* Quantize a double vector into Q8_0 blocks, returned as a list of
+   byte values: [d_fp16_lo, d_fp16_hi, q0..q31] * (n/32). */
+void* fang_llm_quant_q8(void* xv_, int64_t n) {
+    const fang_f64_list_view* xv = (const fang_f64_list_view*)xv_;
+    const double* x = xv->elems;
+    int64_t nb = n / 32;
+    /* result: an int64 list view-compatible allocation */
+    int64_t* out = (int64_t*)malloc((size_t)(nb * 34) * sizeof(int64_t));
+    if (!out) fang_panic("out of memory", "<runtime>", 0);
+    for (int64_t b = 0; b < nb; b++) {
+        const double* xb = x + b * 32;
+        /* Per-block scale, like llama.cpp: outliers in one region do
+           not crush resolution everywhere else. */
+        double amax = 0.0;
+        for (int j = 0; j < 32; j++) {
+            double a = xb[j] < 0 ? -xb[j] : xb[j];
+            if (a > amax) amax = a;
+        }
+        double d = amax / 127.0;
+        if (d == 0.0) d = 1.0;
+        double id = 1.0 / d;
+        uint16_t dh = fang_fp32_to_fp16((float)d);
+        int64_t* o = out + b * 34;
+        o[0] = dh & 0xFF;
+        o[1] = (dh >> 8) & 0xFF;
+        for (int j = 0; j < 32; j++) {
+            int q = (int)(xb[j] * id + (xb[j] < 0 ? -0.5 : 0.5));
+            if (q > 127) q = 127;
+            if (q < -127) q = -127;
+            o[2 + j] = q;
+        }
+    }
+    /* return as a fang list<int>: build the header + elems */
+    fang_i64_list_view* lst = (fang_i64_list_view*)malloc(sizeof(fang_i64_list_view));
+    if (!lst) fang_panic("out of memory", "<runtime>", 0);
+    lst->rc = 1;
+    lst->len = nb * 34;
+    lst->cap = nb * 34;
+    lst->elems = out;
+    return lst;
+}
+
+
+static inline int fang_hsum_epi32(__m256i v) {
+    __m128i lo = _mm256_castsi256_si128(v);
+    __m128i hi = _mm256_extracti128_si256(v, 1);
+    __m128i s8 = _mm_add_epi32(lo, hi);
+    __m128i s4 = _mm_add_epi32(s8, _mm_srli_si128(s8, 8));
+    __m128i s2 = _mm_add_epi32(s4, _mm_srli_si128(s4, 4));
+    return _mm_cvtsi128_si32(s2);
+}
+
+static inline int fang_dot_i8x32(const int8_t* a, const int8_t* b) {
+#if defined(__AVX2__)
+    __m256i acc = _mm256_setzero_si256();
+    __m256i sa = _mm256_loadu_si256((const __m256i*)a);
+    __m256i sb = _mm256_loadu_si256((const __m256i*)b);
+    /* widen to 16-bit lanes and madd */
+    __m256i a_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(sa));
+    __m256i a_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(sa, 1));
+    __m256i b_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(sb));
+    __m256i b_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(sb, 1));
+    __m256i p_lo = _mm256_madd_epi16(a_lo, b_lo);
+    __m256i p_hi = _mm256_madd_epi16(a_hi, b_hi);
+    acc = _mm256_add_epi32(p_lo, p_hi);
+    return fang_hsum_epi32(acc);
+#else
+    int sum = 0;
+    for (int i = 0; i < 32; i++) sum += a[i] * b[i];
+    return sum;
+#endif
+}
+
+/* Integer row dot: weights at blob+off (quant type t) against a Q8_0
+   quantized activation. Returns the dot product. */
+double fang_llm_dot_q8(int64_t t, fang_str* blob, int64_t off, void* qx_, int64_t n) {
+    const uint8_t* base = (const uint8_t*)blob->bytes + off;
+    const fang_i64_list_view* qx = (const fang_i64_list_view*)qx_;
+    const int64_t* q = qx->elems;      /* 34 values per block */
+    const int64_t nb = n / 32;
+    double sumf = 0.0;
+    int8_t yqbuf[32];                   /* staged contiguous q8 block */
+
+    if (t == 8) {
+        /* Q8_0 weights x Q8_0 activation */
+        for (int64_t b = 0; b < nb; b++) {
+            const uint8_t* w = base + b * 34;
+            float dw = fang_fp16_to_fp32((uint16_t)(w[0] | (w[1] << 8)));
+            float dy = fang_fp16_to_fp32((uint16_t)(q[b * 34] | (q[b * 34 + 1] << 8)));
+            const int8_t* wq = (const int8_t*)(w + 2);
+            for (int j = 0; j < 32; j++) yqbuf[j] = (int8_t)q[b * 34 + 2 + j];
+            sumf += (double)dw * dy * fang_dot_i8x32(wq, yqbuf);
+        }
+        return sumf;
+    }
+    if (t == 6) {
+        /* Q5_0 weights x Q8_0 activation, generic reference */
+        for (int64_t b = 0; b < nb; b++) {
+            const uint8_t* w = base + b * 22;
+            float dw = fang_fp16_to_fp32((uint16_t)(w[0] | (w[1] << 8)));
+            float dy = fang_fp16_to_fp32((uint16_t)(q[b * 34] | (q[b * 34 + 1] << 8)));
+            uint32_t qh = (uint32_t)(w[2] | (w[3] << 8) | ((uint32_t)w[4] << 16) | ((uint32_t)w[5] << 24));
+            for (int j = 0; j < 32; j++) yqbuf[j] = (int8_t)q[b * 34 + 2 + j];
+            const int8_t* yq = yqbuf;
+            int sumi = 0;
+            for (int j = 0; j < 16; j++) {
+                uint8_t xh0 = (uint8_t)(((qh >> (j + 0)) << 4) & 0x10);
+                uint8_t xh1 = (uint8_t)((qh >> (j + 12)) & 0x10);
+                int x0 = ((w[6 + j] & 0x0F) | xh0) - 16;
+                int x1 = ((w[6 + j] >> 4) | xh1) - 16;
+                sumi += x0 * yq[j];
+                sumi += x1 * yq[j + 16];
+            }
+            sumf += (double)dw * dy * sumi;
+        }
+        return sumf;
+    }
+    if (t == 0) {
+        /* F32 weights x Q8_0 activation */
+        for (int64_t b = 0; b < nb; b++) {
+            float dy = fang_fp16_to_fp32((uint16_t)(q[b * 34] | (q[b * 34 + 1] << 8)));
+            for (int j = 0; j < 32; j++) yqbuf[j] = (int8_t)q[b * 34 + 2 + j];
+            const int8_t* yq = yqbuf;
+            const uint8_t* w = base + b * 128;
+            double bd = 0.0;
+            for (int j = 0; j < 32; j++) {
+                uint32_t bits = (uint32_t)w[j*4] | ((uint32_t)w[j*4+1] << 8) | ((uint32_t)w[j*4+2] << 16) | ((uint32_t)w[j*4+3] << 24);
+                float fv;
+                memcpy(&fv, &bits, 4);
+                bd += (double)fv * yq[j];
+            }
+            sumf += bd * dy;
+        }
+        return sumf;
+    }
+    if (t == 14 || t == 12) {
+        /* Q6_K / Q4_K: dequantize the 256-weight block to floats once,
+           then dot against the int8 activation values. */
+        float wf[256];
+        int8_t yq[32];
+        for (int64_t b = 0; b < n / 256; b++) {
+            double dw;
+            if (t == 14) {
+                const uint8_t* blk = base + b * 210;
+                dw = fang_fp16_to_fp32((uint16_t)(blk[208] | (blk[209] << 8)));
+                const uint8_t* ql = blk;
+                const uint8_t* qh = blk + 128;
+                const int8_t* sc = (const int8_t*)(blk + 192);
+                for (int half = 0; half < 2; half++) {
+                    const uint8_t* qlh = ql + half * 64;
+                    const uint8_t* qhh = qh + half * 32;
+                    const int8_t* sch = sc + half * 8;
+                    for (int l = 0; l < 32; l++) {
+                        int isc = l / 16;
+                        int q1 = ((qlh[l] & 0xF) | (((qhh[l] >> 0) & 3) << 4)) - 32;
+                        int q2 = ((qlh[l + 32] & 0xF) | (((qhh[l] >> 2) & 3) << 4)) - 32;
+                        int q3 = ((qlh[l] >> 4) | (((qhh[l] >> 4) & 3) << 4)) - 32;
+                        int q4 = ((qlh[l + 32] >> 4) | (((qhh[l] >> 6) & 3) << 4)) - 32;
+                        wf[half * 128 + l]     = (float)(q1 * sch[isc + 0]);
+                        wf[half * 128 + l + 32] = (float)(q2 * sch[isc + 2]);
+                        wf[half * 128 + l + 64] = (float)(q3 * sch[isc + 4]);
+                        wf[half * 128 + l + 96] = (float)(q4 * sch[isc + 6]);
+                    }
+                }
+            } else {
+                const uint8_t* blk = base + b * 144;
+                float d = fang_fp16_to_fp32((uint16_t)(blk[0] | (blk[1] << 8)));
+                float dmin = fang_fp16_to_fp32((uint16_t)(blk[2] | (blk[3] << 8)));
+                const uint8_t* scales = blk + 4;
+                const uint8_t* q = blk + 16;
+                int is = 0;
+                for (int j = 0; j < 256; j += 64) {
+                    uint8_t sc, m;
+                    fang_get_scale_min_k4(is + 0, scales, &sc, &m);
+                    float d1 = d * sc, m1 = dmin * m;
+                    fang_get_scale_min_k4(is + 1, scales, &sc, &m);
+                    float d2 = d * sc, m2 = dmin * m;
+                    for (int l = 0; l < 32; l++) {
+                        wf[j + l] = d1 * (q[l] & 0xF) - m1;
+                        wf[j + 32 + l] = d2 * (q[l] >> 4) - m2;
+                    }
+                    q += 32; is += 2;
+                }
+                dw = 1.0;
+            }
+            for (int g = 0; g < 8; g++) {
+                float dy = fang_fp16_to_fp32((uint16_t)(q[(b * 8 + g) * 34] | (q[(b * 8 + g) * 34 + 1] << 8)));
+                double acc = 0.0;
+                for (int j = 0; j < 32; j++) {
+                    yq[j] = (int8_t)q[(b * 8 + g) * 34 + 2 + j];
+                    acc += (double)wf[g * 32 + j] * yq[j];
+                }
+                sumf += dw * dy * acc;
+            }
+        }
+        return sumf;
+    }
+    fang_panic("unsupported quant type for integer dot", __FILE__, __LINE__);
+    return 0;
+}
+
+/* Build a fang string from a list of byte values. */
+fang_str* fang_utf8_from_bytes(void* bytes_) {
+    const fang_i64_list_view* bytes = (const fang_i64_list_view*)bytes_;
+    fang_str* s = (fang_str*)malloc(sizeof(fang_str) + bytes->len + 1);
+    if (!s) fang_panic("out of memory", "<runtime>", 0);
+    s->rc = 1;
+    s->len = bytes->len;
+    s->cap = bytes->len;
+    for (int64_t i = 0; i < bytes->len; i++) s->bytes[i] = (char)bytes->elems[i];
+    s->bytes[bytes->len] = 0;
+    return s;
+}
+
+/* Bytes per row for a quant type, given the element count. */
+int64_t fang_llm_row_bytes(int64_t ggml_type, int64_t n) {
+    switch (ggml_type) {
+        case 6:  return n / 32 * 22;
+        case 8:  return n / 32 * 34;
+        case 12: return n / 256 * 144;
+        case 14: return n / 256 * 210;
+        case 0:  return n * 4;
+        default: return -1;
+    }
 }
 
 /* ------------------------------------------------------------------ */

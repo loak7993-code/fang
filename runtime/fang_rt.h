@@ -147,6 +147,18 @@ void* fang_tcp_listen(int64_t port);
 void* fang_tcp_accept(void* srv);
 /* Read one HTTP request: headers plus Content-Length body. */
 fang_str* fang_tcp_recv_http(void* sock);
+/* LLM inference: row dot product against a double vector. ggml_type:
+   0 F32, 6 Q5_0, 8 Q8_0, 12 Q4_K, 14 Q6_K. */
+double fang_llm_dot(int64_t ggml_type, fang_str* blob, int64_t off, void* x, int64_t n);
+int64_t fang_llm_row_bytes(int64_t ggml_type, int64_t n);
+/* Quantize a list[float] activation to Q8_0 blocks; returns a
+   list[int] of byte values (34 per 32 elements). */
+void* fang_llm_quant_q8(void* x, int64_t n);
+/* Integer row dot: quantized weights x Q8_0 activation. */
+double fang_llm_dot_q8(int64_t ggml_type, fang_str* blob, int64_t off, void* qx, int64_t n);
+/* Build a string from a list of byte values (0-255). */
+fang_str* fang_utf8_from_bytes(void* bytes);
+
 /* Terminal raw mode (no echo, no line buffering, no signals). */
 void fang_term_raw(void);
 void fang_term_restore(void);
