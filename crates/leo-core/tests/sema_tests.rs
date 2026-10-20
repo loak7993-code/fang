@@ -100,9 +100,9 @@ fn unknown_name_did_you_mean() {
 }
 
 #[test]
-fn assign_to_undeclared_is_an_error() {
-    let a = check("fn main():\n  x = 1\n");
-    assert_one_error(&a, "not declared", "");
+fn assign_to_undeclared_auto_declares() {
+    let a = check("fn main():\n  x = 1\n  print(x)\n");
+    assert_no_errors(&a, "");
 }
 
 #[test]

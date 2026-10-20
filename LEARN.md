@@ -13,14 +13,21 @@ Every example below runs exactly as printed.
 
 ## 1. Values
 
-Leo has four primitive types: `int`, `float`, `bool`, and `str`.
+A Leo program is just lines in a file. The smallest program is one line:
 
 ```leo
-fn main():
-  print(42)
-  print(3.5)
-  print(true)
-  print("hello")
+print("hello")
+```
+
+Run it with `leo run hello.leo`. No function wrappers, no semicolons,
+no imports. Leo has four primitive types: `int`, `float`, `bool`, and
+`str`.
+
+```leo
+print(42)
+print(3.5)
+print(true)
+print("hello")
 ```
 
 Numbers, booleans, and strings print themselves. Division follows the
@@ -36,22 +43,21 @@ fn main():
 
 ## 2. Names
 
-Declare a name once with `let`. After that, assign to it with `=`.
+Assigning to a new name creates it. `let` works too and means the same
+thing.
 
 ```leo
-fn main():
-  let x = 10
-  x = x + 5
-  print(x)
+x = 10
+x = x + 5
+print(x)
 ```
 
 A name keeps its type. Assigning a different type is a compile error that
 tells you both types.
 
 ```leo-expect-error
-fn main():
-  let x = 1
-  x = 1.5
+x = 1
+x = 1.5
 ```
 
 That program does not compile. Leo says `x is int; assigning float is not
@@ -59,19 +65,19 @@ allowed`. Convert the value or use a new name.
 
 ## 3. Functions
 
-Define with `fn`. Parameters carry types; everything else is inferred.
-`main()` is the entry point.
+Define with `fn`. Parameter types are optional — Leo infers them from
+how you use them. `fn main():` is the entry point; files with plain
+top-level lines do not need one.
 
 ```leo
-fn add(a: int, b: int) -> int:
+fn add(a, b):
   return a + b
 
-fn main():
-  print(add(2, 3))
+print(add(2, 3))
 ```
 
-The `-> int` on `add` is optional for plain functions. A function that
-calls itself needs it, so the compiler can check the recursion:
+A function that calls itself needs its return type declared, so the
+compiler can check the recursion:
 
 ```leo
 fn fib(n: int) -> int:
@@ -367,10 +373,12 @@ Freestanding programs use the value types (`int`, `float`, `bool`,
 
 ## Differences from Python, in one list
 
-- `let` declares a name; assignments never retype it
-- parameters carry types; everything else is inferred
+- `let` is optional; assigning to a new name creates it
+- parameter types are optional; unannotated parameters infer from
+  how the body uses them (defaulting to int)
 - `int / int` truncates; write `float(a) / b` for real division
-- no truthiness: conditions are `bool`
+- `if xs:` works for lists, dicts, and strings (nonempty is true);
+  other conditions must be `bool`
 - no classes and no exceptions hierarchy; `try`/`except` with plain
   values; closures capture by value, not by reference
 - tuples exist for multiple returns and dict pairs, nothing else

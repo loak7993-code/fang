@@ -62,6 +62,12 @@ leo_str* leo_str_char_at(leo_str* s, int64_t i);
 
 /* Print: values then separators, newline at end. */
 void leo_print_str(leo_str* s);
+/* Debug rendering used when a collection is printed: [1, 2, 3]. */
+void leo_print_debug(void* v, int kind);
+/* kind: 0 = list[str], 1 = list[int], 2 = list[float], 3 = list[ptr],
+   4 = list[bool], 5 = tuple, 6 = dict. (ptr lists print each element's
+   repr when it is a leo_str*.) */
+leo_str* leo_debug_str(void* v, int kind);
 void leo_print_i64(int64_t v);
 void leo_print_f64(double v);
 void leo_print_bool(bool v);
@@ -126,6 +132,7 @@ double leo_time_now(void);
 double leo_time_clock(void);
 void leo_time_sleep(double seconds);
 leo_str* leo_input_line(void);
+leo_str* leo_input_prompt(leo_str* prompt);
 
 /* ------------------------------------------------------------------ */
 /* Networking: TCP + DNS.                                              */

@@ -841,6 +841,12 @@ impl<'a> FnGen<'a> {
                 let (code, _ty, fresh) = self.gen_expr(value, g);
                 match target {
                     LValue::Ident(n) => {
+                        // An undeclared name in codegen means sema
+                        // auto-declared it: create the frame slot now.
+                        if self.lookup(n).is_none() {
+                            let vt = self.a.ty[&(self.module.clone(), value.span.start)].clone();
+                            self.declare(n, vt, g);
+                        }
                         let v = self.lookup(n).unwrap().clone();
                         // Fast path for the string-building idiom
                         // `s = s + rhs`: concat_assign consumes the old
@@ -1082,6 +1088,19 @@ impl<'a> FnGen<'a> {
 
     fn gen_cond(&mut self, e: &Expr, g: &Gen) -> (String, Ty) {
         let (code, t, fresh) = self.gen_expr(e, g);
+        // Collections and strings in condition position: nonempty is true.
+        match &t {
+            Ty::Str => {
+                return (format!("(({})->len > 0)", code), Ty::Bool);
+            }
+            Ty::List(_) => {
+                return (format!("(({})->len > 0)", code), Ty::Bool);
+            }
+            Ty::Dict(_, _) => {
+                return (format!("(({})->len > 0)", code), Ty::Bool);
+            }
+            _ => {}
+        }
         if fresh && g.is_rc(&t) {
             // materialize so the value survives until the branch closes
             let name = format!("__t{}", self.temp());
@@ -2231,6 +2250,19 @@ impl<'a> FnGen<'a> {
                         Ty::Bool => format!("leo_print_bool({})", code),
                         Ty::Str | Ty::Any => format!("leo_print_str({})", code),
                         Ty::Ptr => format!("leo_print_ptr({})", code),
+                        Ty::List(e) => format!(
+                            "leo_print_debug((void*)({}), {})",
+                            code,
+                            debug_kind(&e)
+                        ),
+                        Ty::Tuple(..) => format!(
+                            "leo_print_debug((void*)(&({})), 5)",
+                            code
+                        ),
+                        Ty::Dict(_, _) => format!(
+                            "leo_print_debug((void*)({}), 6)",
+                            code
+                        ),
                         _ => "leo_print_i64(0)".into(),
                     };
                     self.w(&format!("{};", call));
@@ -2250,6 +2282,15 @@ impl<'a> FnGen<'a> {
                     _ => "0".into(),
                 };
                 (c, Ty::Int, false)
+            }
+            Some(CallTarget::BuiltinInput) => {
+                let prompt = if args.is_empty() {
+                    "NULL".to_string()
+                } else {
+                    let (pc, _, _) = self.gen_expr(&args[0], g);
+                    pc
+                };
+                (format!("leo_input_prompt({})", prompt), Ty::Str, true)
             }
             Some(CallTarget::BuiltinAssert) => {
                 let (code, _, _) = self.gen_expr(&args[0], g);
@@ -2680,6 +2721,17 @@ fn callee_as_recv(callee: &Expr) -> &Expr {
 
 fn make_recv_expr(recv: &Expr) -> Expr {
     recv.clone()
+}
+
+/// Print-debug kind codes for the runtime renderer.
+fn debug_kind(elem: &Ty) -> i32 {
+    match elem {
+        Ty::Str => 0,
+        Ty::Int => 1,
+        Ty::Float => 2,
+        Ty::Bool => 4,
+        _ => 3,
+    }
 }
 
 fn default_value(t: &Ty) -> String {

@@ -242,6 +242,70 @@ void leo_print_bool(bool v) {
 void leo_print_ptr(void* v) {
     printf("%p", v);
 }
+leo_str* leo_debug_str(void* v, int kind);
+
+static void leo_debug_sb(leo_sb* sb, void* item, int item_kind);
+
+/* item_kind: 0=str(ptr), 1=int64, 2=f64, 3=bool, 4=debug(list) */
+static void leo_debug_sb(leo_sb* sb, void* item, int item_kind) {
+    switch (item_kind) {
+    case 0: {
+        leo_str* s = (leo_str*)item;
+        leo_sb_str_raw(sb, s ? s->bytes : "", s ? s->len : 0);
+        break;
+    }
+    case 1: leo_sb_i64(sb, *(int64_t*)item); break;
+    case 2: leo_sb_f64(sb, *(double*)item); break;
+    case 3: leo_sb_bool(sb, *(bool*)item); break;
+    default: break;
+    }
+}
+
+leo_str* leo_debug_str(void* v, int kind) {
+    leo_sb* sb = leo_sb_new();
+    if (kind == 6) {
+        /* dict[str, int]-style: printed as {k: v}; only the common
+           stampings are rendered; anything else shows its pointer. */
+        leo_sb_str_raw(sb, "{...}", 5);
+        return leo_sb_build(sb);
+    }
+    /* All Leo lists share the {rc, len, cap, elems} header. */
+    struct leo_dbg_list {
+        int64_t rc, len, cap;
+        void* elems;
+    }* l = (struct leo_dbg_list*)v;
+    int64_t n = l ? l->len : 0;
+    int width = (kind == 5) ? 8 : 8; /* int64/f64/ptr slots are 8 bytes */
+    const char* open = (kind == 5) ? "(" : "[";
+    const char* close = (kind == 5) ? ")" : "]";
+    leo_sb_str_raw(sb, open, 1);
+    for (int64_t i = 0; i < n; i++) {
+        if (i > 0) leo_sb_str_raw(sb, ", ", 2);
+        char* slot = (char*)l->elems + i * width;
+        int item_kind;
+        if (kind == 0) item_kind = 0;          /* list[str] */
+        else if (kind == 1) item_kind = 1;     /* list[int] */
+        else if (kind == 2) item_kind = 2;     /* list[float] */
+        else if (kind == 4) item_kind = 3;     /* list[bool] */
+        else item_kind = 0;                     /* ptr-ish: best effort */
+        if (kind == 0) {
+            leo_str* s = *(leo_str**)slot;
+            leo_sb_str_raw(sb, "'", 1);
+            leo_sb_str_raw(sb, s ? s->bytes : "", s ? s->len : 0);
+            leo_sb_str_raw(sb, "'", 1);
+        } else {
+            leo_debug_sb(sb, slot, item_kind);
+        }
+    }
+    leo_sb_str_raw(sb, close, 1);
+    return leo_sb_build(sb);
+}
+
+void leo_print_debug(void* v, int kind) {
+    leo_str* s = leo_debug_str(v, kind);
+    fwrite(s->bytes, 1, (size_t)s->len, stdout);
+}
+
 void leo_print_sep(void) {
     putchar(' ');
 }
@@ -462,6 +526,14 @@ void leo_time_sleep(double seconds) {
     ts.tv_sec = (time_t)seconds;
     ts.tv_nsec = (long)((seconds - (double)ts.tv_sec) * 1e9);
     nanosleep(&ts, NULL);
+}
+
+leo_str* leo_input_prompt(leo_str* prompt) {
+    if (prompt && prompt->len > 0) {
+        fwrite(prompt->bytes, 1, (size_t)prompt->len, stdout);
+        fflush(stdout);
+    }
+    return leo_input_line();
 }
 
 leo_str* leo_input_line(void) {

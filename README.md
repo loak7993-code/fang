@@ -30,6 +30,14 @@ semicolons, no type declarations on locals, f-strings, indentation
 blocks. The whole language fits in one sitting, and the whole C
 ecosystem is callable through `extern`.
 
+A whole program:
+
+```leo
+print("hello")
+```
+
+And with everything on:
+
 ```leo
 import math
 
@@ -40,12 +48,11 @@ struct Vec2:
 fn Vec2.norm(self) -> float:
   return math.sqrt(self.x * self.x + self.y * self.y)
 
-fn main():
-  let v = Vec2(3.0, 4.0)
-  print(f"norm = {v.norm()}")
-  let xs = [3, 1, 2]
-  xs.sort()
-  print(xs[0], xs[-1], len(xs))
+v = Vec2(3.0, 4.0)
+print(f"norm = {v.norm()}")
+xs = [3, 1, 2]
+xs.sort()
+print(xs[0], xs[-1], len(xs))
 ```
 
 ## Measured speed

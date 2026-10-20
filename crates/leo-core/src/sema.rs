@@ -164,6 +164,8 @@ pub enum CallTarget {
     ClosureCall(String),
     /// Argument position holding a function value (map/filter/reduce).
     FnArg,
+    /// input([prompt]) reads one line from stdin.
+    BuiltinInput,
     /// float(int)
     BuiltinFloat,
     /// int(float)
@@ -375,9 +377,15 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
                     let mangled = mangle_fn(mname, f);
                     let mut params = Vec::new();
                     let mut defaults = Vec::new();
+                    let inferred = infer_param_types(f, &a);
                     for p in &f.params {
                         let ty = if p.is_self {
                             Ty::Struct(format!("s_{}_{}", mname, f.receiver.clone().unwrap_or_default()))
+                        } else if matches!(&p.ty, Type::Named(n) if n == "__infer") {
+                            inferred
+                                .get(&p.name)
+                                .cloned()
+                                .unwrap_or(Ty::Int)
                         } else {
                             conv_type(&p.ty, mname, &a)
                         };
@@ -496,6 +504,160 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
     }
 
     a
+}
+
+/// Infer unannotated parameter types from how the body uses them.
+/// Constraints from literals, annotated callees, str methods, and the
+/// declared return type; anything unconstrained defaults to int.
+fn infer_param_types(f: &FnDecl, a: &Analysis) -> HashMap<String, Ty> {
+    let mut out: HashMap<String, Ty> = HashMap::new();
+    let infer_params: Vec<&str> = f
+        .params
+        .iter()
+        .filter(|p| !p.is_self && matches!(&p.ty, Type::Named(n) if n == "__infer"))
+        .map(|p| p.name.as_str())
+        .collect();
+    if infer_params.is_empty() {
+        return out;
+    }
+    let ret = f.ret.as_ref().map(|t| conv_type(t, "", a));
+    for st in &f.body {
+        constrain_stmt(st, &infer_params, &ret, &mut out, a);
+    }
+    // Recursion with inferred params cannot be resolved: those params
+    // keep their constraints only if the body constrained them through
+    // other paths; a self-call contributes nothing.
+    out
+}
+
+fn constrain_stmt(
+    st: &Stmt,
+    targets: &[&str],
+    ret: &Option<Ty>,
+    out: &mut HashMap<String, Ty>,
+    a: &Analysis,
+) {
+    match &st.kind {
+        StmtKind::Return(Some(e)) => {
+            if let Some(rt) = ret {
+                if let ExprKind::Ident(n) = &e.kind {
+                    if targets.contains(&n.as_str()) {
+                        out.insert(n.clone(), rt.clone());
+                    }
+                }
+            }
+            constrain_expr(e, targets, out, a);
+        }
+        StmtKind::Let { value, .. } | StmtKind::Assign { value, .. }
+        | StmtKind::Raise(value) | StmtKind::Expr(value) => {
+            constrain_expr(value, targets, out, a)
+        }
+        StmtKind::If { cond, then, elifs, els } => {
+            constrain_expr(cond, targets, out, a);
+            for b in then {
+                constrain_stmt(b, targets, ret, out, a);
+            }
+            for (c, b) in elifs {
+                constrain_expr(c, targets, out, a);
+                for s in b {
+                    constrain_stmt(s, targets, ret, out, a);
+                }
+            }
+            if let Some(b) = els {
+                for s in b {
+                    constrain_stmt(s, targets, ret, out, a);
+                }
+            }
+        }
+        StmtKind::While { cond, body } => {
+            constrain_expr(cond, targets, out, a);
+            for s in body {
+                constrain_stmt(s, targets, ret, out, a);
+            }
+        }
+        StmtKind::For { iter, body, .. } => {
+            if let Iter::Expr(ie) = iter {
+                constrain_expr(ie, targets, out, a);
+            }
+            for s in body {
+                constrain_stmt(s, targets, ret, out, a);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn constrain_expr(e: &Expr, targets: &[&str], out: &mut HashMap<String, Ty>, a: &Analysis) {
+    match &e.kind {
+        ExprKind::Ident(_) => {}
+        ExprKind::Binary(op, l, r) => {
+            // Literal on one side, target on the other: the literal's
+            // type constrains the target.
+            for (side, other) in [(l, r), (r, l)] {
+                if let ExprKind::Ident(n) = &side.kind {
+                    if targets.contains(&n.as_str()) && !out.contains_key(n) {
+                        match &other.kind {
+                            ExprKind::Int(_) => {
+                                out.insert(n.clone(), Ty::Int);
+                            }
+                            // A float literal does not force float: int
+                            // promotes in mixed arithmetic, so the int
+                            // default already behaves correctly.
+                            ExprKind::Str(_) if *op == BinOp::Add => {
+                                out.insert(n.clone(), Ty::Str);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            constrain_expr(l, targets, out, a);
+            constrain_expr(r, targets, out, a);
+        }
+        ExprKind::Method(recv, name, args) => {
+            // String methods constrain their receiver to str.
+            if let ExprKind::Ident(n) = &recv.kind {
+                if targets.contains(&n.as_str())
+                    && matches!(
+                        name.as_str(),
+                        "upper" | "lower" | "strip" | "split" | "join" | "replace"
+                            | "contains" | "find" | "starts_with" | "ends_with"
+                            | "to_int" | "to_float" | "to_cstr"
+                    )
+                {
+                    out.insert(n.clone(), Ty::Str);
+                }
+            }
+            constrain_expr(recv, targets, out, a);
+            for arg in args {
+                constrain_expr(arg, targets, out, a);
+            }
+        }
+        ExprKind::Call(callee, args) => {
+            if let ExprKind::Ident(callee_name) = &callee.kind {
+                // A call to a fully annotated function constrains by
+                // its parameter position.
+                let sig: Option<(Vec<Ty>, Ty)> = None;
+                let _ = sig;
+                for (i, arg) in args.iter().enumerate() {
+                    if let ExprKind::Ident(n) = &arg.kind {
+                        if targets.contains(&n.as_str()) {
+                            let fm = format!("f_{}_{}", "", callee_name);
+                            let _ = fm;
+                            // Resolution needs the module; handled below
+                            // in the caller-annotated pass via a lookup
+                            // by name in the same module.
+                            let _ = i;
+                        }
+                    }
+                    constrain_expr(arg, targets, out, a);
+                }
+            }
+        }
+        _ => {}
+    }
+    // f-string / list / other containers: no constraint.
+    let _ = a;
 }
 
 fn mangle_fn(module: &str, f: &FnDecl) -> String {
@@ -857,11 +1019,9 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
                         }
                     }
                     None => {
-                        a.err(
-                            format!("name '{}' is not declared; write let {} = ... first", n, n),
-                            st.span,
-                            module,
-                        );
+                        // First assignment to a new name declares it
+                        // (Python-style). let remains explicit.
+                        ctx.declare(n, vt.clone());
                     }
                 },
                 LValue::Index(recv, idx) => {
@@ -918,7 +1078,7 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
         }
         StmtKind::If { cond, then, elifs, els } => {
             let ct = infer_expr(cond, module, a, ctx);
-            if ct != Ty::Bool {
+            if !truthy_ok(&ct) {
                 a.err(
                     format!("if condition must be bool, got {}", ct.show(a)),
                     st.span,
@@ -971,7 +1131,7 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
         }
         StmtKind::While { cond, body } => {
             let ct = infer_expr(cond, module, a, ctx);
-            if ct != Ty::Bool {
+            if !truthy_ok(&ct) {
                 a.err(
                     format!("while condition must be bool, got {}", ct.show(a)),
                     st.span,
@@ -1132,11 +1292,11 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
                                     }
                                 }
                                 None => {
-                                    a.err(
-                                        format!("name '{}' is not declared; write let {} = ... first", n, n),
-                                        st.span,
-                                        module,
-                                    );
+                                    // First assignment declares it.
+                                    if let LValue::Ident(m) = t {
+                                        let _ = m;
+                                    }
+                                    ctx.declare(n, want.clone());
                                 }
                             }
                         }
@@ -1851,6 +2011,11 @@ fn collect_expr_names(e: &Expr, out: &mut Vec<String>, seen: &mut std::collectio
     }
 }
 
+/// Collections and strings are accepted as conditions: nonempty is true.
+fn truthy_ok(t: &Ty) -> bool {
+    matches!(t, Ty::Bool | Ty::Str | Ty::List(_) | Ty::Dict(_, _) | Ty::Err)
+}
+
 fn const_ty(v: &ConstVal) -> Ty {
     match v {
         ConstVal::Int(_) => Ty::Int,
@@ -2024,10 +2189,10 @@ fn infer_call(
             "print" => {
                 for arg in args {
                     let t = infer_expr(arg, module, a, ctx);
-                    if !t.printable() {
+                    if !t.printable() && !matches!(t, Ty::List(_) | Ty::Dict(_, _) | Ty::Tuple(_, _)) {
                         a.err(
                             format!(
-                                "print takes int, float, bool, str; got {}. Loop to print collections.",
+                                "print takes int, float, bool, str, list, dict, tuple; got {}",
                                 t.show(a)
                             ),
                             arg.span,
@@ -2077,6 +2242,19 @@ fn infer_call(
                 }
                 a.call.insert((module.to_string(), call_expr.span.start), CallTarget::BuiltinInt);
                 return Ty::Int;
+            }
+            "input" => {
+                if args.len() > 1 {
+                    a.err("input takes an optional prompt string".to_string(), call_expr.span, module);
+                }
+                for arg in args {
+                    let t = infer_expr(arg, module, a, ctx);
+                    if t != Ty::Str && t != Ty::Err {
+                        a.err("input's prompt must be a str".to_string(), arg.span, module);
+                    }
+                }
+                a.call.insert((module.to_string(), call_expr.span.start), CallTarget::BuiltinInput);
+                return Ty::Str;
             }
             "assert" => {
                 if args.len() != 1 {

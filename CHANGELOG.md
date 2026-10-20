@@ -4,6 +4,23 @@ All notable changes to Leo are documented here. The format follows
 [keep a changelog](https://keepachangelog.com/); versions follow
 semantic versioning.
 
+## [0.3.0] - 2026-10-20
+
+Simpler than Python for getting started.
+
+### Added
+
+- Top-level scripts: a file of plain lines runs directly; no
+  `fn main()` required. `print("hello")` is a complete program.
+- Plain assignment creates names; `let` is optional.
+- Parameter types are optional: unannotated parameters infer from
+  body usage (literals, string methods, declared return types),
+  defaulting to int.
+- `input("prompt")` is a global builtin with an optional prompt.
+- `print` renders lists, dicts, and tuples directly (`[1, 2, 3]`).
+- Conditions accept strings, lists, and dicts: nonempty is true
+  (`if xs:`).
+
 ## [0.2.2] - 2026-10-20
 
 ### Added

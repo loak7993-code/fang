@@ -124,6 +124,7 @@ impl<'a> Parser<'a> {
 
     fn module(&mut self, name: &str) -> PResult<Module> {
         let mut items = Vec::new();
+        let mut top_stmts: Vec<Stmt> = Vec::new();
         while !self.at(&Eof) {
             match self.peek_kind().clone() {
                 Comment(text) => {
@@ -177,16 +178,41 @@ impl<'a> Parser<'a> {
                     let t = self.advance();
                     items.push(self.const_decl(false, t)?)
                 }
-                other => {
-                    return perr(
-                        format!(
-                            "expected a top-level declaration (fn, struct, let, import), found {}",
-                            describe(&other)
-                        ),
-                        self.peek(),
-                    )
+                _other => {
+                    // Top-level statements run directly: a file without
+                    // fn main wraps them into one.
+                    let st = self.stmt()?;
+                    top_stmts.push(st);
+                    continue;
                 }
             }
+        }
+        if !top_stmts.is_empty() {
+            let has_main = items.iter().any(|it| matches!(it, Item::Fn(f) if f.name == "main" && f.receiver.is_none()));
+            if has_main {
+                let sp = top_stmts[0].span;
+                return perr(
+                    "this file has both fn main() and top-level statements; move the statements into main or remove main"
+                        .to_string(),
+                    &Token {
+                        kind: TokKind::Eof,
+                        line: sp.line,
+                        col: sp.col,
+                        start: sp.start,
+                        end: sp.end,
+                    },
+                );
+            }
+            let main_decl = FnDecl {
+                receiver: None,
+                name: "main".to_string(),
+                params: Vec::new(),
+                ret: None,
+                body: top_stmts,
+                exported: false,
+                span: Span::new(0, 0, 1, 1),
+            };
+            items.push(Item::Fn(main_decl));
         }
         Ok(Module { name: name.to_string(), items })
     }
@@ -266,11 +292,15 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// A function-expression parameter: name: type [= default].
+    /// A function-expression parameter: name: type [= default]. The
+    /// type may be omitted; it is inferred from the body.
     fn plain_param(&mut self) -> PResult<Param> {
         let (name, span) = self.ident_tok("parameter name")?;
-        self.expect(&Colon, "':' then a parameter type")?;
-        let ty = self.parse_type()?;
+        let ty = if self.eat(&Colon) {
+            self.parse_type()?
+        } else {
+            Type::Named("__infer".to_string())
+        };
         let default = if self.eat(&Eq) {
             Some(self.expr()?)
         } else {
@@ -341,8 +371,12 @@ impl<'a> Parser<'a> {
             }
         }
         let (name, span) = self.ident_tok("parameter name")?;
-        self.expect(&Colon, "':' then a parameter type")?;
-        let ty = self.parse_type()?;
+        // The type may be omitted; it is inferred from the body.
+        let ty = if self.eat(&Colon) {
+            self.parse_type()?
+        } else {
+            Type::Named("__infer".to_string())
+        };
         let default = if self.eat(&Eq) {
             Some(self.expr()?)
         } else {
