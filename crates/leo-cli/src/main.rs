@@ -13,7 +13,7 @@ USAGE:
     leo <COMMAND> [ARGS]
 
 COMMANDS:
-    run <file.leo> [--release] [--keep-c] [--freestanding] [--target TRIPLE]
+    run <file.leo> [--release] [--keep-c] [--freestanding] [--python]
                           compile and execute a Leo program
     build <file.leo> [--release] [-o name] [--freestanding] [--target TRIPLE]
                           produce a standalone native binary
@@ -36,6 +36,19 @@ EXIT CODES:
 /// The C runtime, embedded so the leo binary is self-contained.
 const RT_H: &str = include_str!("../../../runtime/leo_rt.h");
 const RT_C: &str = include_str!("../../../runtime/leo_rt.c");
+const RT_PY_H: &str = include_str!("../../../runtime/leo_py.h");
+const RT_PY_C: &str = include_str!("../../../runtime/leo_py.c");
+
+fn output_of(prog: &str, args: &[&str]) -> Result<String, String> {
+    let out = Command::new(prog)
+        .args(args)
+        .output()
+        .map_err(|e| format!("cannot run {} ({}): Python embedding needs the python3 dev package", prog, e))?;
+    if !out.status.success() {
+        return Err(format!("{} failed", prog));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
 
 /// Standard library modules, embedded at build time.
 static STD_MODULES: &[(&str, &str)] = &[
@@ -47,6 +60,7 @@ static STD_MODULES: &[(&str, &str)] = &[
     ("time", include_str!("../../../std/time.leo")),
     ("json", include_str!("../../../std/json.leo")),
     ("net", include_str!("../../../std/net.leo")),
+    ("py", include_str!("../../../std/py.leo")),
 ];
 
 use std::collections::HashMap;
@@ -80,6 +94,7 @@ struct BuildFlags {
     release: bool,
     keep_c: bool,
     freestanding: bool,
+    python: bool,
     target: Option<String>,
     output: Option<String>,
 }
@@ -90,6 +105,7 @@ fn parse_flags(args: &[String]) -> Result<(String, BuildFlags), String> {
         release: false,
         keep_c: false,
         freestanding: false,
+        python: false,
         target: None,
         output: None,
     };
@@ -99,6 +115,7 @@ fn parse_flags(args: &[String]) -> Result<(String, BuildFlags), String> {
             "--release" => flags.release = true,
             "--keep-c" => flags.keep_c = true,
             "--freestanding" => flags.freestanding = true,
+            "--python" => flags.python = true,
             "--target" => {
                 i += 1;
                 flags.target = Some(
@@ -130,10 +147,13 @@ fn parse_flags(args: &[String]) -> Result<(String, BuildFlags), String> {
     Ok((file, flags))
 }
 
-/// Std units parsed once per program build.
+/// Std units parsed once per program build. The Python bridge module
+/// is excluded: it carries externs that need libpython, so it loads
+/// only when explicitly imported.
 fn embedded_std_units() -> Vec<SourceUnit> {
     STD_MODULES
         .iter()
+        .filter(|(name, _)| *name != "py")
         .filter_map(|(name, src)| {
             parse_source(name, src)
                 .ok()
@@ -168,7 +188,11 @@ fn load_program(entry: &str) -> Result<Vec<SourceUnit>, String> {
     // resolves through them, while qualified use (math.sqrt) still needs
     // its import statement.
     let mut units = embedded_std_units();
-    let mut seen: Vec<String> = STD_MODULES.iter().map(|(n, _)| n.to_string()).collect();
+    let mut seen: Vec<String> = STD_MODULES
+        .iter()
+        .filter(|(n, _)| *n != "py")
+        .map(|(n, _)| n.to_string())
+        .collect();
     load_imports(module, name, entry_path.to_string_lossy().to_string(), &mut units, &mut seen, &entry_path)?;
     Ok(units)
 }
@@ -305,7 +329,13 @@ fn compile_program(
     let opts = GenOpts {
         freestanding: flags.freestanding,
     };
-    let c_src = leo_core::codegen::generate(units, a, entry, &opts)?;
+    let mut c_src = leo_core::codegen::generate(units, a, entry, &opts)?;
+    if flags.python {
+        c_src = c_src.replace(
+            "int main(int argc, char** argv) {",
+            "#include <leo_py.h>\nint main(int argc, char** argv) {\n    leo_py_init();",
+        );
+    }
 
     let build_dir = std::env::temp_dir().join(format!("leo-build-{}", tag));
     std::fs::create_dir_all(&build_dir).map_err(|e| format!("cannot create build dir: {}", e))?;
@@ -313,6 +343,15 @@ fn compile_program(
     std::fs::write(&c_path, &c_src).map_err(|e| format!("cannot write C: {}", e))?;
     std::fs::write(build_dir.join("leo_rt.h"), RT_H).map_err(|e| e.to_string())?;
     std::fs::write(build_dir.join("leo_rt.c"), RT_C).map_err(|e| e.to_string())?;
+    let py_cflags = if flags.python {
+        output_of("python3-config", &["--embed", "--cflags"])?
+    } else {
+        String::new()
+    };
+    if flags.python {
+        std::fs::write(build_dir.join("leo_py.h"), RT_PY_H).map_err(|e| e.to_string())?;
+        std::fs::write(build_dir.join("leo_py.c"), RT_PY_C).map_err(|e| e.to_string())?;
+    }
 
     if flags.keep_c {
         if let Some(dir) = Path::new(&units.last().unwrap().path).parent() {
@@ -347,6 +386,12 @@ fn compile_program(
     if !flags.freestanding {
         cmd.arg(build_dir.join("leo_rt.c"));
     }
+    if flags.python {
+        for flag in py_cflags.split_whitespace() {
+            cmd.arg(flag);
+        }
+        cmd.arg(build_dir.join("leo_py.c"));
+    }
     if let Some(triple) = &flags.target {
         cmd.arg(format!("--target={}", triple));
     }
@@ -356,6 +401,16 @@ fn compile_program(
         cmd.arg("-lm");
     }
     cmd.arg("-o").arg(&binary);
+    let py_ldflags = if flags.python {
+        output_of("python3-config", &["--embed", "--ldflags"])?
+    } else {
+        String::new()
+    };
+    if flags.python {
+        for flag in py_ldflags.split_whitespace() {
+            cmd.arg(flag);
+        }
+    }
     let status = cmd
         .status()
         .map_err(|e| format!("cannot run cc: {}. Is a C compiler installed?", e))?;
@@ -665,6 +720,7 @@ fn try_run_repl(program: &str, dir: &Path) -> Result<String, String> {
         release: false,
         keep_c: false,
         freestanding: false,
+        python: false,
         target: None,
         output: Some("repl.bin".to_string()),
     };

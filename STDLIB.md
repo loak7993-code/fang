@@ -187,6 +187,38 @@ A `JValue` has `kind` (one of `nil bool int float str list dict`),
 `s`, `i`, `f`, `b`, and `ref`. `json.get` on a missing key returns a
 `kind == "nil"` value, not an error.
 
+## py (Python bridge)
+
+Use any Python library from Leo. Requires building with `--python`
+(needs the python3 dev package):
+
+```
+leo run app.leo --python
+```
+
+```leo
+import py
+
+fn main():
+  let random = py.import_module("random")
+  let randint = py.attr(random, "randint")
+  let roll = py.call(randint, [py.to_py(1), py.to_py(6)])
+  print(f"roll: {py.to_int(roll)}")
+```
+
+| Function | Type |
+|----------|------|
+| `import_module(name)` | `-> ptr` any Python module |
+| `attr(obj, name)` | `-> ptr` attribute fetch |
+| `call(fn, args)` | `args: list[ptr]`, returns `ptr` |
+| `call_method(obj, name, args)` | method call |
+| `eval(code)` / `exec(code)` | run Python source |
+| `to_py(v)` / `to_py_f(v)` / `to_py_b(v)` / `to_py_s(v)` | Leo to Python |
+| `to_int(o)` / `to_float(o)` / `to_bool(o)` / `to_str(o)` | Python to Leo |
+| `repr(o)` | `-> str` Python repr |
+| `none()`, `is_none(o)` | None handling |
+| `decref(o)` | manual release; otherwise objects live for the process |
+
 ## net
 
 Plain TCP and HTTP/1.0. No TLS in v0.1.

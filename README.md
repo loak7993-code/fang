@@ -151,6 +151,26 @@ import mypkg
 `leo.lock` pins each package to a commit hash. Packages cannot depend
 on other packages in v0.1.
 
+## Python libraries from Leo
+
+```sh
+leo run app.leo --python
+```
+
+```leo
+import py
+
+fn main():
+  let np = py.import_module("numpy")
+  let a = py.call_method(np, "arange", [py.to_py(5)])
+  print(py.repr(a))
+  print(f"mean: {py.to_float(py.call_method(a, 'mean', []))}")
+```
+
+The flag links libpython via `python3-config --embed` (needs the
+python3 dev package). Python objects are `ptr` values; convert with
+`py.to_py*` and `py.to_*`. See STDLIB.md for the full surface.
+
 ## Where Leo is going
 
 - `0.2`: struct fields holding collections, typed errors, a cycle

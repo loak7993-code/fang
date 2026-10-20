@@ -4,6 +4,16 @@ All notable changes to Leo are documented here. The format follows
 [keep a changelog](https://keepachangelog.com/); versions follow
 semantic versioning.
 
+## [0.2.1] - 2026-10-20
+
+### Added
+
+- Python bridge: `leo run app.leo --python` embeds CPython (via
+  `python3-config --embed`) and the `py` stdlib module imports any
+  Python library, calls functions and methods, evaluates Python source,
+  and converts values in both directions. Third-party packages work:
+  the shipped example calls numpy.
+
 ## [0.2.0] - 2026-10-20
 
 ### Added

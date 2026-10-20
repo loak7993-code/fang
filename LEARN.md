@@ -286,7 +286,21 @@ fn main():
     print(f"caught: {e}")
 ```
 
-## 10. Modules and packages
+## 10. Python libraries from Leo
+
+Any Python library, imported and called from Leo. Build with
+`leo run x.leo --python`:
+
+```leo
+import py
+
+fn main():
+  let math = py.import_module("math")
+  let sqrt = py.attr(math, "sqrt")
+  print(py.to_float(py.call(sqrt, [py.to_py_f(2.0)])))
+```
+
+## 11. Modules and packages
 
 Standard modules load with `import` and are used by qualified name:
 
@@ -311,7 +325,7 @@ That clones into `leo_packages/` and pins the commit in `leo.lock`. Then
 `import mypkg` just works. Publishing a package means pushing a git
 repository with `mypkg.leo` at its root.
 
-## 11. Talking to C
+## 12. Talking to C
 
 Declare any C function and call it. This is how Leo reaches the whole C
 ecosystem: GUI toolkits, databases, syscalls, kernel interfaces.
@@ -328,7 +342,7 @@ Types map directly: `int` to `long long`, `float` to `double`,
 integers with `cast`, and get a C string with `s.to_cstr()`.
 Variadic C functions are not supported in v0.1.
 
-## 12. Inline assembly and freestanding builds
+## 13. Inline assembly and freestanding builds
 
 For kernels and bare-metal targets:
 
