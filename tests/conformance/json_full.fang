@@ -1,0 +1,17 @@
+import json
+
+fn main():
+  let doc = json.parse("{\"name\": \"fang\", \"version\": 1, \"tags\": [\"fast\", \"tiny\"], \"ratio\": 0.5, \"ok\": true, \"extra\": null}")
+  print(json.stringify(doc))
+  print(doc.kind)
+  print(json.get(doc, "name").s)
+  print(json.get(doc, "version").i + 1)
+  print(json.get(doc, "ratio").f)
+  print(json.get(doc, "ok").b)
+  print(json.get(doc, "extra").kind)
+  let tags = json.as_list(json.get(doc, "tags"))
+  print(len(tags), tags[1].s)
+  try:
+    let bad = json.parse("{nope")
+  except e:
+    print(f"caught: {e}")

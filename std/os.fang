@@ -1,0 +1,25 @@
+extern fn fang_os_argc() -> int from "fang_rt.h"
+extern fn fang_os_arg(i: int) -> str from "fang_rt.h"
+extern fn fang_os_env(name: str) -> str from "fang_rt.h"
+extern fn fang_os_getcwd() -> str from "fang_rt.h"
+extern fn fang_os_system(cmd: str) -> int from "fang_rt.h"
+extern fn fang_os_exit(code: int) from "fang_rt.h"
+
+export fn args() -> list[str]:
+  let out: list[str] = []
+  let n = fang_os_argc()
+  for i in 0..n:
+    out.push(fang_os_arg(i))
+  return out
+
+export fn env(name: str) -> str:
+  return fang_os_env(name)
+
+export fn getcwd() -> str:
+  return fang_os_getcwd()
+
+export fn system(cmd: str) -> int:
+  return fang_os_system(cmd)
+
+export fn exit(code: int):
+  fang_os_exit(code)

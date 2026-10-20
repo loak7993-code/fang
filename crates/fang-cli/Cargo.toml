@@ -1,0 +1,14 @@
+[package]
+name = "fang-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The fang binary: run, build, repl, fmt, test, add."
+
+[[bin]]
+name = "fang"
+path = "src/main.rs"
+
+[dependencies]
+fang-core = { path = "../fang-core" }
+rustyline = "15"

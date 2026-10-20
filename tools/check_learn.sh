@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Every ```leo block in LEARN.md must run; every ```leo-expect-error block
+# Every ```fang block in LEARN.md must run; every ```fang-expect-error block
 # must fail to compile. The tutorial cannot rot.
 set -u
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-LEO="${LEO:-$DIR/target/debug/leo}"
-[ -x "$LEO" ] || LEO="$DIR/target/release/leo"
-[ -x "$LEO" ] || { echo "build leo first: cargo build"; exit 1; }
+FANG="${FANG:-$DIR/target/debug/fang}"
+[ -x "$FANG" ] || FANG="$DIR/target/release/fang"
+[ -x "$FANG" ] || { echo "build fang first: cargo build"; exit 1; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -17,12 +17,12 @@ import sys
 src = open(sys.argv[1]).read()
 outdir = sys.argv[2]
 i = 0
-for m in re.finditer(r"```(leo|leo-expect-error)\n(.*?)```", src, re.S):
+for m in re.finditer(r"```(fang|fang-expect-error)\n(.*?)```", src, re.S):
     i += 1
-    kind = "err" if m.group(1) == "leo-expect-error" else "run"
+    kind = "err" if m.group(1) == "fang-expect-error" else "run"
     # Blocks that use the Python bridge need --python to link.
     needs_py = "import py" in m.group(2)
-    with open(f"{outdir}/{i:03d}_{kind}{'_py' if needs_py else ''}.leo", "w") as f:
+    with open(f"{outdir}/{i:03d}_{kind}{'_py' if needs_py else ''}.fang", "w") as f:
         prelude = "" if needs_py else "import json\nimport str\nimport math\n"
         f.write(prelude + m.group(2))
 print(i)
@@ -30,8 +30,8 @@ PYEOF
 
 ok=0
 fail=0
-for f in "$tmp"/*.leo; do
-  base=$(basename "$f" .leo)
+for f in "$tmp"/*.fang; do
+  base=$(basename "$f" .fang)
   kind="${base##*_}"
   if [[ "$kind" == "py" ]]; then
     kind="run"
@@ -39,7 +39,7 @@ for f in "$tmp"/*.leo; do
   else
     PYFLAG=""
   fi
-  if "$LEO" run "$f" $PYFLAG >/dev/null 2>&1; then
+  if "$FANG" run "$f" $PYFLAG >/dev/null 2>&1; then
     if [ "$kind" = "err" ]; then
       fail=$((fail + 1))
       echo "FAIL $(basename "$f"): expected a compile error, it ran"
@@ -52,7 +52,7 @@ for f in "$tmp"/*.leo; do
     else
       fail=$((fail + 1))
       echo "FAIL $(basename "$f"):"
-      "$LEO" run "$f" 2>&1 | head -4
+      "$FANG" run "$f" 2>&1 | head -4
     fi
   fi
 done

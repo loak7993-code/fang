@@ -1,4 +1,4 @@
-# Leo language specification, version 0.1
+# Fang language specification, version 0.1
 
 This document is normative. Where the implementation and this document
 disagree, file a bug.
@@ -97,12 +97,12 @@ Tuples hold exactly two values.
 
 ## 3. Types
 
-| Leo | Meaning | C representation |
+| Fang | Meaning | C representation |
 |-----|---------|------------------|
 | `int` | 64-bit signed integer, wrapping | `int64_t` |
 | `float` | 64-bit IEEE float | `double` |
 | `bool` | `true` / `false` | `bool` |
-| `str` | immutable length-prefixed bytes | `leo_str*` |
+| `str` | immutable length-prefixed bytes | `fang_str*` |
 | `ptr` | untyped pointer | `void*` |
 | `list[T]` | growable array of T | stamped C struct |
 | `dict[K, V]` | open-addressing map | stamped C struct |
@@ -154,8 +154,8 @@ Two channels:
 
 - One file is one module. Module name is the file stem.
 - `import math` resolves: embedded standard library, then a sibling
-  `math.leo`, then `leo_packages/math/math.leo`.
-- `import utils from "./dir/utils.leo"` loads an explicit path.
+  `math.fang`, then `fang_packages/math/math.fang`.
+- `import utils from "./dir/utils.fang"` loads an explicit path.
 - `export` marks public functions, structs, and constants. Everything
   else is module-private.
 - The standard library modules are always present in a build; their
@@ -165,14 +165,14 @@ Two channels:
 
 ## 7. C interop
 
-```leo
+```fang
 extern fn sqrt(x: float) -> float from "math.h"
 ```
 
 - One `extern` per C symbol. The header string is sanitized to
   letters, digits, `_ . / -`.
 - Type mapping: `int` to `long long`, `float` to `double`, `bool` to
-  `bool`, `str` to `leo_str*`, `ptr` to `void*`.
+  `bool`, `str` to `fang_str*`, `ptr` to `void*`.
 - Variadic C functions are rejected at compile time in v0.1.
 - `cast[ptr](x)` / `cast[int](p)` convert between pointers and
   integers. `cast[T](p)` reinterprets a `ptr` back to an RC type.
@@ -181,12 +181,12 @@ extern fn sqrt(x: float) -> float from "math.h"
 
 ## 8. Freestanding mode
 
-`leo build --freestanding --target <triple>` compiles with
+`fang build --freestanding --target <triple>` compiles with
 `-nostdlib -ffreestanding` and links no runtime. Available: `int`,
 `float`, `bool`, `ptr`, structs, `asm("...")`, and `cast`. Not
 available: `str`, collections, `print`, `raise`, `try`.
 
-The entry wrapper is `void leo_kernel_main(void)`. Bring your own
+The entry wrapper is `void fang_kernel_main(void)`. Bring your own
 crt0 and linker script.
 
 ## 9. Operator semantics

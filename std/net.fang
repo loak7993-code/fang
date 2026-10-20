@@ -1,0 +1,40 @@
+extern fn fang_net_resolve(host: str, port: int) -> ptr from "fang_rt.h"
+extern fn fang_tcp_send(sock: ptr, data: str) -> int from "fang_rt.h"
+extern fn fang_tcp_recv_all(sock: ptr) -> str from "fang_rt.h"
+extern fn fang_tcp_close(sock: ptr) from "fang_rt.h"
+
+export fn tcp_connect(host: str, port: int) -> ptr:
+  return fang_net_resolve(host, port)
+
+export fn tcp_send(sock: ptr, data: str):
+  let n = fang_tcp_send(sock, data)
+  let _unused = n
+
+export fn tcp_recv(sock: ptr) -> str:
+  return fang_tcp_recv_all(sock)
+
+export fn tcp_close(sock: ptr):
+  fang_tcp_close(sock)
+
+# http_get(url) fetches over plain HTTP/1.0. No TLS in v0.1.
+export fn http_get(url: str) -> str:
+  let rest = url
+  if rest.starts_with("http://"):
+    rest = rest.slice(7, len(rest))
+  let slash = rest.find("/")
+  let host = ""
+  let path = "/"
+  if slash < 0:
+    host = rest
+  else:
+    host = rest.slice(0, slash)
+    path = rest.slice(slash, len(rest))
+  let sock = tcp_connect(host, 80)
+  tcp_send(sock, "GET " + path + " HTTP/1.0\r\nHost: " + host + "\r\n\r\n")
+  let response = tcp_recv(sock)
+  tcp_close(sock)
+  # Split headers from the body.
+  let sep_pos = response.find("\r\n\r\n")
+  if sep_pos < 0:
+    return response
+  return response.slice(4 + sep_pos, len(response))

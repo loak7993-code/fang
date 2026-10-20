@@ -1,15 +1,15 @@
 <div align="center">
 
-<img src="docs/logo.svg" width="96" alt="Leo" />
+<img src="docs/logo.svg" width="96" alt="Fang" />
 
-# Leo
+# Fang
 
 **Looks like Python. Runs like C.**
 
 A small compiled language you can learn in an afternoon and ship
 anywhere C ships: servers, CLI tools, kernels, desktop, embedded.
 
-[Never coded? `leo learn`](LEARN.md) · [15-minute tutorial](LEARN.md) · [Spec](SPEC.md) · [Stdlib](STDLIB.md)
+[Never coded? `fang learn`](LEARN.md) · [15-minute tutorial](LEARN.md) · [Spec](SPEC.md) · [Stdlib](STDLIB.md)
 
 </div>
 
@@ -18,13 +18,13 @@ anywhere C ships: servers, CLI tools, kernels, desktop, embedded.
 ## Start from zero
 
 ```sh
-leo learn      # interactive course, no experience needed
-leo new demo   # starter project
+fang learn      # interactive course, no experience needed
+fang new demo   # starter project
 ```
 
-## Why Leo
+## Why Fang
 
-Leo compiles through C, so it runs at native speed with no interpreter
+Fang compiles through C, so it runs at native speed with no interpreter
 and no garbage collector pauses. The syntax is Python-shaped: no
 semicolons, no type declarations on locals, f-strings, indentation
 blocks. The whole language fits in one sitting, and the whole C
@@ -32,13 +32,13 @@ ecosystem is callable through `extern`.
 
 A whole program:
 
-```leo
+```fang
 print("hello")
 ```
 
 And with everything on:
 
-```leo
+```fang
 import math
 
 struct Vec2:
@@ -60,7 +60,7 @@ print(xs[0], xs[-1], len(xs))
 Same algorithms, median of 5 runs, on an AMD EPYC-Milan 8-core
 (Run `bench/run.sh` yourself: the suite ships in the repository).
 
-| benchmark | Leo | Python 3 | C (gcc -O2) | Rust (rustc -O) | C++ (g++ -O2) |
+| benchmark | Fang | Python 3 | C (gcc -O2) | Rust (rustc -O) | C++ (g++ -O2) |
 |-----------|------:|---------:|------------:|----------------:|--------------:|
 | fib(32) recursive | 0.010 s | 0.603 s | 0.010 s | 0.012 s | 0.010 s |
 | loop sum, 100M | 0.001 s | 8.845 s | 0.001 s | 0.002 s | 0.001 s |
@@ -69,7 +69,7 @@ Same algorithms, median of 5 runs, on an AMD EPYC-Milan 8-core
 | sort 1M ints | 0.040 s | 0.951 s | n/a | 0.042 s | 0.085 s |
 
 Fastest or tied on every benchmark, against every language in the
-suite. At fib(35) scale (22 ms), Leo's generated code performs
+suite. At fib(35) scale (22 ms), Fang's generated code performs
 identically to hand-written C compiled by gcc -O2. Dict ops edge out
 C++ `std::unordered_map` and double Rust. Sorting beats `std::sort` by
 2x via radix and edges Rust's pdqsort. String building leaves
@@ -85,7 +85,7 @@ range-adaptive LSD radix for integer lists (three passes for 32-bit
 data), and a release profile of `-O3 -march=native`. Dict ops sit in a
 statistical tie with `std::unordered_map`: C++ hashes ints by identity
 into prime-counted buckets, which streams well for cycling sequential
-keys, while Leo's Fibonacci-multiply hash deliberately scatters to
+keys, while Fang's Fibonacci-multiply hash deliberately scatters to
 resist stride-key clustering. Run-to-run variance on this class of
 machine is a few milliseconds; the sort and string gaps are stable
 across runs.
@@ -95,32 +95,32 @@ across runs.
 You need Rust (to build the compiler) and a C compiler (gcc or clang).
 
 ```sh
-git clone <this repository> leo
-cd leo
-cargo install --path crates/leo-cli
-leo version
+git clone <this repository> fang
+cd fang
+cargo install --path crates/fang-cli
+fang version
 ```
 
 Or build and use in place:
 
 ```sh
 cargo build --release
-./target/release/leo run examples/hello.leo
+./target/release/fang run examples/hello.fang
 ```
 
-`leo` embeds its runtime and standard library in the binary, so the tool
+`fang` embeds its runtime and standard library in the binary, so the tool
 itself has no runtime dependencies beyond `cc`.
 
 ## The tool
 
 ```sh
-leo run app.leo              # compile and execute
-leo build app.leo --release  # standalone native binary (-O2)
-leo build kernel.leo --freestanding --target x86_64-elf  # no runtime, no libc
-leo repl                     # interactive session
-leo fmt src/*.leo            # canonical formatting
-leo test                     # run every *_test.leo under the current directory
-leo add github.com/user/pkg  # install a package, pinned in leo.lock
+fang run app.fang              # compile and execute
+fang build app.fang --release  # standalone native binary (-O2)
+fang build kernel.fang --freestanding --target x86_64-elf  # no runtime, no libc
+fang repl                     # interactive session
+fang fmt src/*.fang            # canonical formatting
+fang test                     # run every *_test.fang under the current directory
+fang add github.com/user/pkg  # install a package, pinned in fang.lock
 ```
 
 Exit codes: 0 success, 1 compile error, 2 test failure, 101 runtime panic.
@@ -129,19 +129,19 @@ Exit codes: 0 success, 1 compile error, 2 test failure, 101 runtime panic.
 
 Call any fixed-arity C function directly:
 
-```leo
+```fang
 extern fn sqrt(x: float) -> float from "math.h"
 
 fn main():
   print(sqrt(2.0))
 ```
 
-For kernels and bare metal, `leo build --freestanding` emits C with no
+For kernels and bare metal, `fang build --freestanding` emits C with no
 runtime and no libc, compiles with `-nostdlib`, and passes any
 `--target` triple through to the C compiler. Inline assembly is a
 statement:
 
-```leo
+```fang
 fn main():
   asm("nop")
 ```
@@ -151,27 +151,27 @@ way the `extern` examples do.
 
 ## Packages
 
-A package is a git repository with `mypkg.leo` at its root. There is no
+A package is a git repository with `mypkg.fang` at its root. There is no
 registry, no account, and no server to run:
 
 ```sh
-leo add github.com/someone/mypkg
+fang add github.com/someone/mypkg
 ```
 
-```leo
+```fang
 import mypkg
 ```
 
-`leo.lock` pins each package to a commit hash. Packages cannot depend
+`fang.lock` pins each package to a commit hash. Packages cannot depend
 on other packages in v0.1.
 
-## Python libraries from Leo
+## Python libraries from Fang
 
 ```sh
-leo run app.leo --python
+fang run app.fang --python
 ```
 
-```leo
+```fang
 import py
 
 fn main():
@@ -185,7 +185,7 @@ The flag links libpython via `python3-config --embed` (needs the
 python3 dev package). Python objects are `ptr` values; convert with
 `py.to_py*` and `py.to_*`. See STDLIB.md for the full surface.
 
-## Where Leo is going
+## Where Fang is going
 
 - `0.2`: struct fields holding collections, typed errors, a cycle
   collector, closures
@@ -210,10 +210,10 @@ Stated plainly, so nothing here surprises you:
 ## Repository layout
 
 ```
-crates/leo-core/    compiler library: lexer, parser, sema, codegen
-crates/leo-cli/     the leo binary
-std/                standard library, written in Leo
-runtime/            the C runtime (leo_rt.c, leo_rt.h)
+crates/fang-core/    compiler library: lexer, parser, sema, codegen
+crates/fang-cli/     the fang binary
+std/                standard library, written in Fang
+runtime/            the C runtime (fang_rt.c, fang_rt.h)
 tests/conformance/  programs with expected output, run by cargo test
 bench/              benchmark suite (bench/run.sh)
 examples/           runnable example programs

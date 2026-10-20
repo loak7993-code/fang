@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/leo-core", "crates/leo-cli"]
+members = ["crates/fang-core", "crates/fang-cli"]
 
 [workspace.package]
-version = "0.3.2"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 

@@ -1,0 +1,100 @@
+# Python bridge: use any Python library from Fang.
+
+# Requires building with --python (fang run x.fang --python).
+
+extern fn fang_py_import(name: ptr) -> ptr from "fang_py.h"
+
+extern fn fang_py_attr(obj: ptr, name: ptr) -> ptr from "fang_py.h"
+
+extern fn fang_py_eval(code: ptr) -> ptr from "fang_py.h"
+
+extern fn fang_py_exec(code: ptr) from "fang_py.h"
+
+extern fn fang_py_from_int(v: int) -> ptr from "fang_py.h"
+
+extern fn fang_py_from_float(v: float) -> ptr from "fang_py.h"
+
+extern fn fang_py_from_bool(v: bool) -> ptr from "fang_py.h"
+
+extern fn fang_py_from_str(s: ptr, len: int) -> ptr from "fang_py.h"
+
+extern fn fang_py_to_int(o: ptr) -> int from "fang_py.h"
+
+extern fn fang_py_to_float(o: ptr) -> float from "fang_py.h"
+
+extern fn fang_py_to_bool(o: ptr) -> bool from "fang_py.h"
+
+extern fn fang_py_to_str(o: ptr) -> str from "fang_py.h"
+
+extern fn fang_py_repr(o: ptr) -> str from "fang_py.h"
+
+extern fn fang_py_none() -> ptr from "fang_py.h"
+
+extern fn fang_py_is_none(o: ptr) -> bool from "fang_py.h"
+
+extern fn fang_py_decref(o: ptr) from "fang_py.h"
+
+extern fn fang_py_print(o: ptr) from "fang_py.h"
+
+export fn import_module(name: str) -> ptr:
+  return fang_py_import(name.to_cstr())
+
+export fn attr(obj: ptr, name: str) -> ptr:
+  return fang_py_attr(obj, name.to_cstr())
+  # call with a list of python values
+
+extern fn fang_py_call_list(f: ptr, args: ptr) -> ptr from "fang_py.h"
+
+export fn call(f: ptr, args: list[ptr]) -> ptr:
+  return fang_py_call_list(f, cast[ptr](args))
+
+extern fn fang_py_call_list_method(obj: ptr, name: ptr, args: ptr) -> ptr from "fang_py.h"
+
+export fn call_method(obj: ptr, name: str, args: list[ptr]) -> ptr:
+  return fang_py_call_list_method(obj, name.to_cstr(), cast[ptr](args))
+
+export fn eval(code: str) -> ptr:
+  return fang_py_eval(code.to_cstr())
+
+export fn exec(code: str):
+  fang_py_exec(code.to_cstr())
+  # Conversions
+
+export fn to_py(v: int) -> ptr:
+  return fang_py_from_int(v)
+
+export fn to_py_f(v: float) -> ptr:
+  return fang_py_from_float(v)
+
+export fn to_py_b(v: bool) -> ptr:
+  return fang_py_from_bool(v)
+
+export fn to_py_s(v: str) -> ptr:
+  return fang_py_from_str(v.to_cstr(), len(v))
+
+export fn to_int(o: ptr) -> int:
+  return fang_py_to_int(o)
+
+export fn to_float(o: ptr) -> float:
+  return fang_py_to_float(o)
+
+export fn to_bool(o: ptr) -> bool:
+  return fang_py_to_bool(o)
+
+export fn to_str(o: ptr) -> str:
+  return fang_py_to_str(o)
+
+export fn repr(o: ptr) -> str:
+  return fang_py_repr(o)
+
+export fn none() -> ptr:
+  return fang_py_none()
+
+export fn is_none(o: ptr) -> bool:
+  return fang_py_is_none(o)
+
+export fn decref(o: ptr):
+  fang_py_decref(o)
+
+export fn print(o: ptr):
+  fang_py_print(o)

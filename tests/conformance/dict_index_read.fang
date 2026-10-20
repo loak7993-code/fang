@@ -1,0 +1,2 @@
+ages = {"panda": 30, "fang": 1}
+print(ages["panda"])

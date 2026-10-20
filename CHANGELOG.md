@@ -1,6 +1,14 @@
 # Changelog
 
-All notable changes to Leo are documented here. The format follows
+## [1.0.0] - 2026-10-20
+
+Renamed to Fang (previously Leo, briefly Volt). The whole repository:
+binary, file extension (.fang), runtime symbols (fang_*), crate names
+(fang-core, fang-cli), docs, course, cheat sheet, and examples.
+Everything else unchanged: 68 tests, 27/27 doc examples, 18/18
+interactive course checks, clippy clean.
+
+All notable changes to Fang are documented here. The format follows
 [keep a changelog](https://keepachangelog.com/); versions follow
 semantic versioning.
 
@@ -10,14 +18,14 @@ The entire language, learnable in one sitting.
 
 ### Added
 
-- `leo learn` now covers the whole language: 18 interactive lessons
+- `fang learn` now covers the whole language: 18 interactive lessons
   from `print` through dictionaries, structs, string methods,
   comprehensions, functions as values, raise/try/except, imports,
   extern C, and closures, ending in a guessing game that uses
   everything. Every answer compiles and runs; the course is driven
   end to end in CI (18 checks plus a wrong-answer rejection).
-- `leo cheat`: the whole language on one screen, with examples.
-- `leo doc <topic>`: instant help for any keyword, builtin, or
+- `fang cheat`: the whole language on one screen, with examples.
+- `fang doc <topic>`: instant help for any keyword, builtin, or
   command, with runnable examples.
 
 ### Fixed (found while building the course)
@@ -84,13 +92,13 @@ Simpler than Python for getting started.
 
 ### Added
 
-- `leo learn`: an eight-lesson interactive terminal course for people
+- `fang learn`: an eight-lesson interactive terminal course for people
   with zero programming experience. Each lesson explains a concept in
   plain language, has the learner fill in a blank in a real program,
   compiles and runs it, and checks the output. Wrong answers show the
   actual output or compile error plus hints. Progress saves between
-  sessions; `leo learn list` and `leo learn reset` manage it.
-- `leo new <name>`: scaffold a starter project.
+  sessions; `fang learn list` and `fang learn reset` manage it.
+- `fang new <name>`: scaffold a starter project.
 - `tools/check_learn_cmd.sh`: drives the course end to end in CI,
   including rejecting wrong answers.
 
@@ -98,7 +106,7 @@ Simpler than Python for getting started.
 
 ### Added
 
-- Python bridge: `leo run app.leo --python` embeds CPython (via
+- Python bridge: `fang run app.fang --python` embeds CPython (via
   `python3-config --embed`) and the `py` stdlib module imports any
   Python library, calls functions and methods, evaluates Python source,
   and converts values in both directions. Third-party packages work:
@@ -139,12 +147,12 @@ analysis with type inference, C code generation, native compilation.
   `dict[K, V]`, tuples for multiple returns, nominal structs.
 - Memory: reference counting with deterministic release at function
   exit. Documented leaks: cycles, raise paths, ptr-cast holders.
-- Tooling: `leo run`, `leo build` (debug, `--release`, `--freestanding`
-  with `--target` passthrough), `leo repl`, `leo fmt` (canonical style,
-  round-trip tested), `leo test` (file-based), `leo add` (git packages
-  with `leo.lock` pinning).
+- Tooling: `fang run`, `fang build` (debug, `--release`, `--freestanding`
+  with `--target` passthrough), `fang repl`, `fang fmt` (canonical style,
+  round-trip tested), `fang test` (file-based), `fang add` (git packages
+  with `fang.lock` pinning).
 - Standard library: `io`, `str`, `list` and `dict` methods, `math`,
-  `os`, `fs`, `time`, `json` (pure Leo), `net` (TCP and HTTP/1.0).
+  `os`, `fs`, `time`, `json` (pure Fang), `net` (TCP and HTTP/1.0).
 - Documentation: `README.md`, `LEARN.md` (every example executed by
   `tools/check_learn.sh`), `SPEC.md`, `STDLIB.md`.
 - Testing: 67 unit and integration tests, a conformance suite of

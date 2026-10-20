@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Leo — Looks like Python. Runs like C.</title>
-<meta name="description" content="Leo is a small compiled language with Python-shaped syntax and native speed. Learn it in an afternoon, ship it anywhere C ships.">
+<title>Fang — Looks like Python. Runs like C.</title>
+<meta name="description" content="Fang is a small compiled language with Python-shaped syntax and native speed. Learn it in an afternoon, ship it anywhere C ships.">
 <style>
 @font-face {
   font-family: "Geist Sans";
@@ -140,19 +140,19 @@ footer { border-top: 1px solid var(--line); padding: 64px 0 80px; margin-top: 40
 
 <nav>
   <div class="wrap">
-    <a class="brand" href="#"><img src="logo.svg" alt="Leo logo"> leo</a>
+    <a class="brand" href="#"><img src="logo.svg" alt="Fang logo"> fang</a>
     <a href="#speed">Speed</a>
     <a href="#language">Language</a>
     <a href="#stdlib">Standard library</a>
     <a href="#interop">Interop</a>
-    <a href="https://github.com/leonxlnx/leo">GitHub</a>
+    <a href="https://github.com/fangnxlnx/fang">GitHub</a>
   </div>
 </nav>
 
 <div class="wrap">
   <header>
     <h1>Looks like Python.<br>Runs like <span class="accent">C</span>.</h1>
-    <p class="tagline">Leo is a small compiled language with Python-shaped syntax and
+    <p class="tagline">Fang is a small compiled language with Python-shaped syntax and
     native speed. Learn it in an afternoon. Ship it anywhere C ships: servers,
     CLI tools, kernels, desktop, embedded.</p>
     <div class="cta">
@@ -168,7 +168,7 @@ footer { border-top: 1px solid var(--line); padding: 64px 0 80px; margin-top: 40
     <div class="tbl">
       <table>
         <thead>
-          <tr><th>Benchmark</th><th class="num">Leo</th><th class="num">Python 3</th><th class="num">C</th><th class="num">Rust</th><th class="num">C++</th></tr>
+          <tr><th>Benchmark</th><th class="num">Fang</th><th class="num">Python 3</th><th class="num">C</th><th class="num">Rust</th><th class="num">C++</th></tr>
         </thead>
         <tbody>
           <tr><td>fib(32), recursive</td><td class="num"><span class="fast">0.010 s</span></td><td class="num">0.603 s</td><td class="num">0.010 s</td><td class="num">0.012 s</td><td class="num">0.010 s</td></tr>
@@ -186,7 +186,7 @@ footer { border-top: 1px solid var(--line); padding: 64px 0 80px; margin-top: 40
     <h2>The whole language fits in one sitting</h2>
     <p class="sub">Under 30 reserved words. Ten of them cover a beginner's first hour.
     Type annotations only on function parameters; everything else is inferred.</p>
-    <pre><button class="copybtn" onclick="cp(this)">copy</button><span class="c"># fib.leo — runs with: leo run fib.leo</span>
+    <pre><button class="copybtn" onclick="cp(this)">copy</button><span class="c"># fib.fang — runs with: fang run fib.fang</span>
 <span class="k">import</span> math
 
 <span class="k">struct</span> Vec2:
@@ -223,9 +223,9 @@ footer { border-top: 1px solid var(--line); padding: 64px 0 80px; margin-top: 40
       <span class="mono">asm</span> for the parts hardware needs. Target any
       triple your toolchain knows.</p></div>
       <div class="card"><h3>Packages without infrastructure</h3><p>A package is a
-      git repository. <span class="mono">leo add</span> clones and pins it.
+      git repository. <span class="mono">fang add</span> clones and pins it.
       No registry, no account, no server to maintain.</p></div>
-      <div class="card"><h3>One canonical style</h3><p><span class="mono">leo fmt</span>
+      <div class="card"><h3>One canonical style</h3><p><span class="mono">fang fmt</span>
       formats everything the same way. Style arguments end here.</p></div>
       <div class="card"><h3>A tutorial that cannot rot</h3><p>Every code block in
       the tutorial is extracted and executed by the test suite. If an example
@@ -235,8 +235,8 @@ footer { border-top: 1px solid var(--line); padding: 64px 0 80px; margin-top: 40
 
   <section id="stdlib">
     <h2>Standard library</h2>
-    <p class="sub">Written in Leo itself, embedded in the compiler binary.
-    The JSON parser is pure Leo, which keeps the language honest.</p>
+    <p class="sub">Written in Fang itself, embedded in the compiler binary.
+    The JSON parser is pure Fang, which keeps the language honest.</p>
     <div style="display:flex; gap:10px; flex-wrap:wrap">
       <span class="pill">io</span><span class="pill">str</span><span class="pill">list</span>
       <span class="pill">dict</span><span class="pill">math</span><span class="pill">os</span>
@@ -257,14 +257,14 @@ footer { border-top: 1px solid var(--line); padding: 64px 0 80px; margin-top: 40
 <span class="k">fn</span> main():
   <span class="k">asm</span>(<span class="s">"nop"</span>)</pre>
     <p class="sub" style="margin-top:16px">
-    <span class="mono">leo build kernel.leo --freestanding --target x86_64-elf</span>
+    <span class="mono">fang build kernel.fang --freestanding --target x86_64-elf</span>
     emits C with no runtime, links nothing, and expects your crt0.</p>
   </section>
 
   <footer>
     <div class="foot-grid">
       <div>
-        <h4>Leo</h4>
+        <h4>Fang</h4>
         <p style="color:var(--text-2); font-size:14px">A small compiled language with
         Python-shaped syntax and native speed. MIT licensed. Version 0.1.0.</p>
       </div>
@@ -276,19 +276,19 @@ footer { border-top: 1px solid var(--line); padding: 64px 0 80px; margin-top: 40
       </div>
       <div>
         <h4>Reference</h4>
-        <a href="https://github.com/leonxlnx/leo/blob/main/LEARN.md">LEARN.md</a>
-        <a href="https://github.com/leonxlnx/leo/blob/main/SPEC.md">SPEC.md</a>
-        <a href="https://github.com/leonxlnx/leo/blob/main/STDLIB.md">STDLIB.md</a>
+        <a href="https://github.com/fangnxlnx/fang/blob/main/LEARN.md">LEARN.md</a>
+        <a href="https://github.com/fangnxlnx/fang/blob/main/SPEC.md">SPEC.md</a>
+        <a href="https://github.com/fangnxlnx/fang/blob/main/STDLIB.md">STDLIB.md</a>
       </div>
       <div>
         <h4>Project</h4>
-        <a href="https://github.com/leonxlnx/leo">GitHub</a>
-        <a href="https://github.com/leonxlnx/leo/blob/main/CHANGELOG.md">Changelog</a>
-        <a href="https://github.com/leonxlnx/leo/blob/main/LICENSE">License</a>
+        <a href="https://github.com/fangnxlnx/fang">GitHub</a>
+        <a href="https://github.com/fangnxlnx/fang/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/fangnxlnx/fang/blob/main/LICENSE">License</a>
       </div>
     </div>
     <p class="foot-note">Measured on AMD EPYC-Milan, Linux, gcc 13, median of five runs.
-    Leo 0.1.0. Geist font by Vercel, SIL OFL 1.1.</p>
+    Fang 0.1.0. Geist font by Vercel, SIL OFL 1.1.</p>
   </footer>
 </div>
 

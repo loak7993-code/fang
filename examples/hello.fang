@@ -1,0 +1,4 @@
+# The smallest Fang program.
+fn main():
+  print("hello, fang")
+  print(f"1 + 2 = {1 + 2}")

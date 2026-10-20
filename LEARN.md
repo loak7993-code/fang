@@ -1,29 +1,29 @@
-# Learn Leo in 15 minutes
+# Learn Fang in 15 minutes
 
-Never programmed before? Run `leo learn` first: it is an interactive
+Never programmed before? Run `fang learn` first: it is an interactive
 course in your terminal that starts from zero and checks every answer.
 Then come back here for the full language.
 
-Leo reads like Python and runs as native code. This tutorial covers the
-whole language. Type the examples into a file called `intro.leo` and run
-them with `leo run intro.leo` as you go. You can also paste single lines
-into `leo repl` and see them run immediately.
+Fang reads like Python and runs as native code. This tutorial covers the
+whole language. Type the examples into a file called `intro.fang` and run
+them with `fang run intro.fang` as you go. You can also paste single lines
+into `fang repl` and see them run immediately.
 
 Every example below runs exactly as printed.
 
 ## 1. Values
 
-A Leo program is just lines in a file. The smallest program is one line:
+A Fang program is just lines in a file. The smallest program is one line:
 
-```leo
+```fang
 print("hello")
 ```
 
-Run it with `leo run hello.leo`. No function wrappers, no semicolons,
-no imports. Leo has four primitive types: `int`, `float`, `bool`, and
+Run it with `fang run hello.fang`. No function wrappers, no semicolons,
+no imports. Fang has four primitive types: `int`, `float`, `bool`, and
 `str`.
 
-```leo
+```fang
 print(42)
 print(3.5)
 print(true)
@@ -35,7 +35,7 @@ operands: `7 / 2` is `3` (int), `7.0 / 2` is `3.5` (float). That is the
 biggest difference from Python and it is deliberate: no hidden type
 changes in a compiled language.
 
-```leo
+```fang
 fn main():
   print(7 / 2)
   print(float(7) / 2)
@@ -46,7 +46,7 @@ fn main():
 Assigning to a new name creates it. `let` works too and means the same
 thing.
 
-```leo
+```fang
 x = 10
 x = x + 5
 print(x)
@@ -55,21 +55,21 @@ print(x)
 A name keeps its type. Assigning a different type is a compile error that
 tells you both types.
 
-```leo-expect-error
+```fang-expect-error
 x = 1
 x = 1.5
 ```
 
-That program does not compile. Leo says `x is int; assigning float is not
+That program does not compile. Fang says `x is int; assigning float is not
 allowed`. Convert the value or use a new name.
 
 ## 3. Functions
 
-Define with `fn`. Parameter types are optional — Leo infers them from
+Define with `fn`. Parameter types are optional — Fang infers them from
 how you use them. `fn main():` is the entry point; files with plain
 top-level lines do not need one.
 
-```leo
+```fang
 fn add(a, b):
   return a + b
 
@@ -79,7 +79,7 @@ print(add(2, 3))
 A function that calls itself needs its return type declared, so the
 compiler can check the recursion:
 
-```leo
+```fang
 fn fib(n: int) -> int:
   if n < 2:
     return n
@@ -94,7 +94,7 @@ fn main():
 Conditions must be booleans. There is no truthiness: an empty list is
 `len(xs) == 0`, not just `xs`.
 
-```leo
+```fang
 fn main():
   let n = 15
   if n % 15 == 0:
@@ -109,7 +109,7 @@ fn main():
 
 Loops: `while`, range `for`, and collection `for`.
 
-```leo
+```fang
 fn main():
   let i = 0
   while i < 3:
@@ -127,7 +127,7 @@ inside loops.
 
 `list` and `dict` are built in. They are typed by what you put in them.
 
-```leo
+```fang
 fn main():
   let xs = [4, 1, 3]
   xs.push(2)
@@ -139,7 +139,7 @@ fn main():
 An empty list needs its type written out, because there is nothing to
 infer from:
 
-```leo
+```fang
 fn main():
   let ys: list[int] = []
   ys.push(1)
@@ -148,12 +148,12 @@ fn main():
 
 Dicts map `str` or `int` keys to values:
 
-```leo
+```fang
 fn main():
-  let ages = {"panda": 30, "leo": 1}
+  let ages = {"panda": 30, "fang": 1}
   ages.set("nova", 5)
   print(ages.get("panda", 0))
-  print(ages.contains("leo"))
+  print(ages.contains("fang"))
   for name, age in ages.items():
     print(f"{name} is {age}")
 ```
@@ -166,9 +166,9 @@ from the end. Slices `xs[1:3]` give a new list.
 Strings are immutable. Build text with f-strings, which accept any
 printable expression inside braces:
 
-```leo
+```fang
 fn main():
-  let name = "leo"
+  let name = "fang"
   let version = 1
   print(f"{name} v{version}, {1 + 2} tests")
 ```
@@ -176,7 +176,7 @@ fn main():
 String methods: `upper`, `lower`, `strip`, `split`, `join`, `replace`,
 `contains`, `find`, `starts_with`, `ends_with`, `to_int`, `to_float`.
 
-```leo
+```fang
 fn main():
   let parts = "a,b,c".split(",")
   print(len(parts))
@@ -188,7 +188,7 @@ fn main():
 
 A struct is a fixed set of named fields, passed by value.
 
-```leo
+```fang
 struct Point:
   x: float
   y: float
@@ -211,7 +211,7 @@ function call.
 A function is a value. Write one inline with `fn(...)` expressions; it
 closes over the locals it reads (captured by value when created):
 
-```leo
+```fang
 fn main():
   let base = 100
   let addbase = fn(x: int) -> int: return base + x
@@ -220,7 +220,7 @@ fn main():
 
 Name a function and pass it around the same way:
 
-```leo
+```fang
 fn double(x: int) -> int:
   return x * 2
 
@@ -231,7 +231,7 @@ fn main():
 
 Lists understand `map`, `filter`, and `reduce` with any function value:
 
-```leo
+```fang
 fn double(x: int) -> int:
   return x * 2
 
@@ -244,7 +244,7 @@ fn main():
 
 Comprehensions build lists from lists, dict keys, or ranges:
 
-```leo
+```fang
 fn main():
   let xs = [1, 2, 3, 4, 5, 6]
   let big = [x * 10 for x in xs if x > 3]
@@ -255,16 +255,16 @@ fn main():
 
 Two binders iterate pairs, so dict items compose with comprehensions:
 
-```leo
+```fang
 fn main():
-  let ages = {"panda": 30, "leo": 1}
+  let ages = {"panda": 30, "fang": 1}
   let pairs = [f"{k}={v}" for k, v in ages.items()]
   print(pairs[0])
 ```
 
 Swap (and any two-target tuple assignment) with one line:
 
-```leo
+```fang
 fn main():
   let a = 1
   let b = 2
@@ -274,12 +274,12 @@ fn main():
 
 Parameters can carry defaults, evaluated at the call site:
 
-```leo
+```fang
 fn greet(name: str, greeting: str = "hello") -> str:
   return f"{greeting}, {name}"
 
 fn main():
-  print(greet("leo"))
+  print(greet("fang"))
   print(greet("panda", "yo"))
 ```
 
@@ -289,7 +289,7 @@ Runtime failures (bad index, bad division, failed assert) stop the
 program with a message and the file and line. For expected failures,
 `raise` a value and catch it with `try`/`except`:
 
-```leo
+```fang
 fn main():
   try:
     raise "the disk is full"
@@ -297,12 +297,12 @@ fn main():
     print(f"caught: {e}")
 ```
 
-## 10. Python libraries from Leo
+## 10. Python libraries from Fang
 
-Any Python library, imported and called from Leo. Build with
-`leo run x.leo --python`:
+Any Python library, imported and called from Fang. Build with
+`fang run x.fang --python`:
 
-```leo
+```fang
 import py
 
 fn main():
@@ -315,7 +315,7 @@ fn main():
 
 Standard modules load with `import` and are used by qualified name:
 
-```leo
+```fang
 import math
 import str
 
@@ -325,23 +325,23 @@ fn main():
 ```
 
 Your own files import by name when they sit next to the entry file:
-`import utils` reads `utils.leo`. Install someone's package from a git
+`import utils` reads `utils.fang`. Install someone's package from a git
 repository:
 
 ```
-leo add github.com/someone/mypkg
+fang add github.com/someone/mypkg
 ```
 
-That clones into `leo_packages/` and pins the commit in `leo.lock`. Then
+That clones into `fang_packages/` and pins the commit in `fang.lock`. Then
 `import mypkg` just works. Publishing a package means pushing a git
-repository with `mypkg.leo` at its root.
+repository with `mypkg.fang` at its root.
 
 ## 12. Talking to C
 
-Declare any C function and call it. This is how Leo reaches the whole C
+Declare any C function and call it. This is how Fang reaches the whole C
 ecosystem: GUI toolkits, databases, syscalls, kernel interfaces.
 
-```leo
+```fang
 extern fn sqrt(x: float) -> float from "math.h"
 
 fn main():
@@ -357,7 +357,7 @@ Variadic C functions are not supported in v0.1.
 
 For kernels and bare-metal targets:
 
-```leo
+```fang
 fn main():
   asm("nop")
 ```
@@ -365,7 +365,7 @@ fn main():
 Build without the runtime, libc, or any dependency:
 
 ```
-leo build kernel.leo --freestanding --target x86_64-elf
+fang build kernel.fang --freestanding --target x86_64-elf
 ```
 
 Freestanding programs use the value types (`int`, `float`, `bool`,

@@ -1,0 +1,7 @@
+extern fn fang_input_line() -> str from "fang_rt.h"
+
+export fn input() -> str:
+  return fang_input_line()
+
+export fn read_line() -> str:
+  return fang_input_line()

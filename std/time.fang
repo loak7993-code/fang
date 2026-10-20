@@ -1,0 +1,12 @@
+extern fn fang_time_now() -> float from "fang_rt.h"
+extern fn fang_time_clock() -> float from "fang_rt.h"
+extern fn fang_time_sleep(seconds: float) from "fang_rt.h"
+
+export fn now() -> float:
+  return fang_time_now()
+
+export fn clock() -> float:
+  return fang_time_clock()
+
+export fn sleep(seconds: float):
+  fang_time_sleep(seconds)

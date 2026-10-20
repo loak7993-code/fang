@@ -3,10 +3,10 @@
 # passes, wrong answers are rejected, progress never skips.
 set -u
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-LEO="${LEO:-$DIR/target/release/leo}"
-[ -x "$LEO" ] || { echo "build leo first"; exit 1; }
+FANG="${FANG:-$DIR/target/release/fang}"
+[ -x "$FANG" ] || { echo "build fang first"; exit 1; }
 
-progress="$HOME/.leo/learn-progress"
+progress="$HOME/.fang/learn-progress"
 mkdir -p "$(dirname "$progress")"
 echo 0 > "$progress"
 
@@ -16,7 +16,7 @@ fail=0
 lesson() {
   local num="$1" answer="$2"
   local out
-  out=$(printf '%s\nquit\n' "$answer" | "$LEO" learn 2>&1)
+  out=$(printf '%s\nquit\n' "$answer" | "$FANG" learn 2>&1)
   if echo "$out" | grep -q "correct!"; then
     pass=$((pass + 1))
   else
@@ -34,8 +34,8 @@ lesson() {
 # The course array runs basics(7), dictionaries, structs, strings,
 # comprehensions, functions-as-values, errors, imports, extern C,
 # closures, then the final guessing game.
-lesson 1 'hello, leo'
-lesson 2 'leo'
+lesson 1 'hello, fang'
+lesson 2 'fang'
 lesson 3 '7'
 lesson 4 '20'
 lesson 5 '4'
@@ -53,7 +53,7 @@ lesson 16 'x'
 lesson 17 'correct!'
 
 echo 0 > "$progress"
-out=$(printf 'nope\nquit\n' | "$LEO" learn 2>&1)
+out=$(printf 'nope\nquit\n' | "$FANG" learn 2>&1)
 if echo "$out" | grep -q "correct!"; then
   echo "FAIL: wrong answer accepted"
   fail=$((fail + 1))

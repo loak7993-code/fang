@@ -1,6 +1,6 @@
-# Leo standard library, version 0.1
+# Fang standard library, version 0.1
 
-Every function here is implemented in Leo (see `std/`) over a small C
+Every function here is implemented in Fang (see `std/`) over a small C
 runtime. Method sugar: functions whose first parameter is `str` are
 callable as methods (`s.upper()` is `str.upper(s)`).
 
@@ -10,7 +10,7 @@ functions are also callable as methods on receiver types.
 
 ## io
 
-```leo
+```fang
 import io
 
 fn main():
@@ -25,7 +25,7 @@ fn main():
 
 ## str
 
-```leo
+```fang
 import str
 
 fn main():
@@ -52,7 +52,7 @@ fn main():
 
 ## list (methods on every list)
 
-```leo
+```fang
 fn main():
   let xs = [3, 1, 2]
   xs.push(4)
@@ -75,7 +75,7 @@ fn main():
 
 ## dict (methods on every dict)
 
-```leo
+```fang
 fn main():
   let ages: dict[str, int] = {"panda": 30}
   print(ages.get("panda", 0))
@@ -94,7 +94,7 @@ fn main():
 
 ## math
 
-```leo
+```fang
 import math
 
 fn main():
@@ -114,7 +114,7 @@ fn main():
 
 ## os
 
-```leo
+```fang
 import os
 
 fn main():
@@ -132,7 +132,7 @@ fn main():
 
 ## fs
 
-```leo
+```fang
 import fs
 
 fn main():
@@ -160,10 +160,10 @@ fn main():
 
 ## json
 
-Pure Leo, no runtime JSON code. Values are tagged structs; `list` and
+Pure Fang, no runtime JSON code. Values are tagged structs; `list` and
 `dict` results are read back with `as_list` and `as_dict`.
 
-```leo
+```fang
 import json
 
 fn main():
@@ -189,14 +189,14 @@ A `JValue` has `kind` (one of `nil bool int float str list dict`),
 
 ## py (Python bridge)
 
-Use any Python library from Leo. Requires building with `--python`
+Use any Python library from Fang. Requires building with `--python`
 (needs the python3 dev package):
 
 ```
-leo run app.leo --python
+fang run app.fang --python
 ```
 
-```leo
+```fang
 import py
 
 fn main():
@@ -213,8 +213,8 @@ fn main():
 | `call(fn, args)` | `args: list[ptr]`, returns `ptr` |
 | `call_method(obj, name, args)` | method call |
 | `eval(code)` / `exec(code)` | run Python source |
-| `to_py(v)` / `to_py_f(v)` / `to_py_b(v)` / `to_py_s(v)` | Leo to Python |
-| `to_int(o)` / `to_float(o)` / `to_bool(o)` / `to_str(o)` | Python to Leo |
+| `to_py(v)` / `to_py_f(v)` / `to_py_b(v)` / `to_py_s(v)` | Fang to Python |
+| `to_int(o)` / `to_float(o)` / `to_bool(o)` / `to_str(o)` | Python to Fang |
 | `repr(o)` | `-> str` Python repr |
 | `none()`, `is_none(o)` | None handling |
 | `decref(o)` | manual release; otherwise objects live for the process |
@@ -223,7 +223,7 @@ fn main():
 
 Plain TCP and HTTP/1.0. No TLS in v0.1.
 
-```leo
+```fang
 import net
 
 fn main():

@@ -1,0 +1,3 @@
+ages = {"panda": 30, "fang": 1}
+ages["nova"] = 5
+print(ages["panda"], ages["nova"])

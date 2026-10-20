@@ -1,0 +1,32 @@
+extern fn fang_fs_read_file(path: str) -> str from "fang_rt.h"
+extern fn fang_fs_write_file(path: str, data: str) from "fang_rt.h"
+extern fn fang_fs_append_file(path: str, data: str) from "fang_rt.h"
+extern fn fang_fs_exists(path: str) -> bool from "fang_rt.h"
+extern fn fang_fs_list_dir(path: str) -> str from "fang_rt.h"
+extern fn fang_fs_mkdir(path: str) from "fang_rt.h"
+extern fn fang_fs_remove(path: str) from "fang_rt.h"
+
+export fn read_file(path: str) -> str:
+  return fang_fs_read_file(path)
+
+export fn write_file(path: str, data: str):
+  fang_fs_write_file(path, data)
+
+export fn append_file(path: str, data: str):
+  fang_fs_append_file(path, data)
+
+export fn exists(path: str) -> bool:
+  return fang_fs_exists(path)
+
+export fn mkdir(path: str):
+  fang_fs_mkdir(path)
+
+export fn remove(path: str):
+  fang_fs_remove(path)
+
+export fn list_dir(path: str) -> list[str]:
+  let raw = fang_fs_list_dir(path)
+  if len(raw) == 0:
+    let empty: list[str] = []
+    return empty
+  return raw.split("\n")
