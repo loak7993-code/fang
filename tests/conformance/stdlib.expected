@@ -10,6 +10,6 @@ parts = 2: Hello + Fang!
 joined: Hello-Fang!
 replaced: Hello, World!
 num + 1 = 124
-cwd = /root/leo
+cwd is nonempty: true
 pid-ish args = 1
 now > 1e9: true

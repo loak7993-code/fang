@@ -30,7 +30,7 @@ fn main():
   print(f"replaced: {t.replace("Fang", "World")}")
   let n = "123".to_int()
   print(f"num + 1 = {n + 1}")
-  print(f"cwd = {os.getcwd()}")
+  print("cwd is nonempty:", len(os.getcwd()) > 0)
   print(f"pid-ish args = {len(os.args())}")
   let now = time.now()
   print(f"now > 1e9: {now > 1000000000.0}")
