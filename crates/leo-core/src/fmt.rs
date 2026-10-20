@@ -129,6 +129,19 @@ fn write_stmt(out: &mut String, st: &Stmt, pad: &str) {
             write_expr(out, value, 0);
             out.push('\n');
         }
+        StmtKind::AssignMulti { targets, value } => {
+            let ts: Vec<String> = targets
+                .iter()
+                .map(|t| {
+                    let mut out = String::new();
+                    write_lvalue(&mut out, t);
+                    out
+                })
+                .collect();
+            out.push_str(&format!("{}{} = ", pad, ts.join(", ")));
+            write_expr(out, value, 0);
+            out.push('\n');
+        }
         StmtKind::Assign { target, value } => {
             out.push_str(pad);
             write_lvalue(out, target);
@@ -368,6 +381,46 @@ pub fn write_expr(out: &mut String, e: &Expr, min: u8) {
             out.push_str(", ");
             write_expr(out, b, 0);
             out.push(')');
+        }
+        ExprKind::FnExpr(f) => {
+            let params: Vec<String> = f
+                .params
+                .iter()
+                .map(|p| match &p.default {
+                    Some(d) => {
+                        let mut out = format!("{}: {} = ", p.name, p.ty);
+                        write_expr(&mut out, d, 0);
+                        out
+                    }
+                    None => format!("{}: {}", p.name, p.ty),
+                })
+                .collect();
+            out.push_str(&format!("fn({})", params.join(", ")));
+            if let Some(r) = &f.ret {
+                out.push_str(&format!(" -> {}", r));
+            }
+            out.push(':');
+            let mut body = String::new();
+            write_block(&mut body, &f.body, 1);
+            out.push_str(&body);
+        }
+        ExprKind::Comprehension { item, binders, iter, cond } => {
+            out.push('[');
+            write_expr(out, item, 0);
+            out.push_str(&format!(" for {} in ", binders.join(", ")));
+            match &**iter {
+                Iter::Expr(e) => write_expr(out, e, 0),
+                Iter::Range { start, end, inclusive } => {
+                    write_expr(out, start, 0);
+                    out.push_str(if *inclusive { "..=" } else { ".." });
+                    write_expr(out, end, 0);
+                }
+            }
+            if let Some(c) = cond {
+                out.push_str(" if ");
+                write_expr(out, c, 0);
+            }
+            out.push(']');
         }
         ExprKind::Cast(t, inner) => {
             out.push_str(&format!("cast[{}](", t));

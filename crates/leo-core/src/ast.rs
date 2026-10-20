@@ -108,6 +108,23 @@ pub enum ExprKind {
     TupleLit(Box<Expr>, Box<Expr>),
     /// cast[T](expr)
     Cast(Type, Box<Expr>),
+    /// Anonymous function value: fn(x: int) -> int: return x * 2
+    FnExpr(Box<FndeclExpr>),
+    /// [item for x in xs if cond]
+    Comprehension {
+        item: Box<Expr>,
+        binders: Vec<String>,
+        iter: Box<Iter>,
+        cond: Option<Box<Expr>>,
+    },
+}
+
+/// A function expression: parameters, optional declared return, body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FndeclExpr {
+    pub params: Vec<Param>,
+    pub ret: Option<Type>,
+    pub body: Block,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,6 +156,8 @@ pub enum StmtKind {
         value: Expr,
     },
     Assign { target: LValue, value: Expr },
+    /// a, b = rhs (tuple assignment and swap)
+    AssignMulti { targets: Vec<LValue>, value: Expr },
     Return(Option<Expr>),
     If {
         cond: Expr,
@@ -164,6 +183,8 @@ pub struct Param {
     pub name: String,
     pub ty: Type,
     pub is_self: bool,
+    /// default value expression, if any
+    pub default: Option<Expr>,
     pub span: Span,
 }
 

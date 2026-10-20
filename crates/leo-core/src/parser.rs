@@ -266,6 +266,59 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// A function-expression parameter: name: type [= default].
+    fn plain_param(&mut self) -> PResult<Param> {
+        let (name, span) = self.ident_tok("parameter name")?;
+        self.expect(&Colon, "':' then a parameter type")?;
+        let ty = self.parse_type()?;
+        let default = if self.eat(&Eq) {
+            Some(self.expr()?)
+        } else {
+            None
+        };
+        Ok(Param { name, ty, is_self: false, default, span })
+    }
+
+    /// A block, or a single inline `return expr` when ':' is followed on
+    /// the same line (function expressions inside call parentheses).
+    fn inline_or_block(&mut self) -> PResult<Block> {
+        self.expect(&Colon, "':'")?;
+        if self.at(&Newline) {
+            return self.block_body();
+        }
+        if self.at(&Return) {
+            let t = self.advance();
+            let value = if matches!(
+                self.peek_kind(),
+                Newline | Eof | RParen | Comma
+            ) {
+                None
+            } else {
+                Some(self.expr()?)
+            };
+            return Ok(vec![Stmt {
+                kind: StmtKind::Return(value),
+                span: tok_span(&t),
+            }]);
+        }
+        perr(
+            "a single-line function body must be `return <expr>`; use an indented block for more".to_string(),
+            self.peek(),
+        )
+    }
+
+    /// Block content after ':' NEWLINE INDENT.
+    fn block_body(&mut self) -> PResult<Block> {
+        self.expect(&Newline, "a newline after ':'")?;
+        self.expect(&Indent, "an indented block")?;
+        let mut stmts = Vec::new();
+        while !self.at(&Dedent) && !self.at(&Eof) {
+            stmts.push(self.stmt()?);
+        }
+        self.eat(&Dedent);
+        Ok(stmts)
+    }
+
     fn param(&mut self, receiver: Option<&str>) -> PResult<Param> {
         let t = self.peek().clone();
         // 'self' as an unannotated first parameter of a method.
@@ -280,6 +333,7 @@ impl<'a> Parser<'a> {
                             name: "self".into(),
                             ty: Type::Named(recv.to_string()),
                             is_self: true,
+                            default: None,
                             span: tok_span(&t),
                         });
                     }
@@ -289,7 +343,12 @@ impl<'a> Parser<'a> {
         let (name, span) = self.ident_tok("parameter name")?;
         self.expect(&Colon, "':' then a parameter type")?;
         let ty = self.parse_type()?;
-        Ok(Param { name, ty, is_self: false, span })
+        let default = if self.eat(&Eq) {
+            Some(self.expr()?)
+        } else {
+            None
+        };
+        Ok(Param { name, ty, is_self: false, default, span })
     }
 
     fn struct_decl(&mut self, exported: bool) -> PResult<StructDecl> {
@@ -464,10 +523,27 @@ impl<'a> Parser<'a> {
 
         // Expression statement or assignment.
         let value = self.expr()?;
+        // Tuple assignment: a, b = rhs
+        if self.at(&Comma) {
+            self.advance();
+            let second = self.expr()?;
+            self.expect(&Eq, "'=' for tuple assignment")?;
+            let ta = self.lvalue_of(value)?;
+            let tb = self.lvalue_of(second)?;
+            let rhs = self.assignment_rhs()?;
+            self.finish_line()?;
+            return Ok(Stmt {
+                kind: StmtKind::AssignMulti {
+                    targets: vec![ta, tb],
+                    value: rhs,
+                },
+                span: tok_span(&t),
+            });
+        }
         if self.at(&Eq) {
             self.advance();
             let target = self.lvalue_of(value)?;
-            let rhs = self.expr()?;
+            let rhs = self.assignment_rhs()?;
             self.finish_line()?;
             Ok(Stmt {
                 kind: StmtKind::Assign { target, value: rhs },
@@ -530,6 +606,21 @@ impl<'a> Parser<'a> {
         };
         let body = self.block()?;
         Ok(Stmt { kind: StmtKind::For { binders, iter, body }, span: tok_span(&t) })
+    }
+
+    /// The right side of an assignment: one expression, or a 2-tuple
+    /// written without parentheses (for swaps).
+    fn assignment_rhs(&mut self) -> PResult<Expr> {
+        let first = self.expr()?;
+        if self.at(&Comma) {
+            let t = self.advance();
+            let second = self.expr()?;
+            return Ok(Expr {
+                kind: ExprKind::TupleLit(Box::new(first), Box::new(second)),
+                span: tok_span(&t),
+            });
+        }
+        Ok(first)
     }
 
     fn lvalue_of(&mut self, e: Expr) -> PResult<LValue> {
@@ -817,6 +908,30 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(Expr { kind: ExprKind::Nil, span: tok_span(&t) })
             }
+            Fn => {
+                // Function expression: fn(x: int) -> int: return x * 2
+                self.advance(); // fn
+                self.expect(&LParen, "'('")?;
+                let mut params = Vec::new();
+                self.skip_comments();
+                if !self.at(&RParen) {
+                    loop {
+                        self.skip_comments();
+                        params.push(self.plain_param()?);
+                        self.skip_comments();
+                        if !self.eat(&Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&RParen, "')'")?;
+                let ret = if self.eat(&Arrow) { Some(self.parse_type()?) } else { None };
+                let body = self.inline_or_block()?;
+                Ok(Expr {
+                    kind: ExprKind::FnExpr(Box::new(FndeclExpr { params, ret, body })),
+                    span: tok_span(&t),
+                })
+            }
             Ident(name) => {
                 // cast[T](expr)
                 if name == "cast" && self.toks.get(self.pos + 1).map(|x| &x.kind) == Some(&LBracket) {
@@ -862,16 +977,55 @@ impl<'a> Parser<'a> {
             }
             LBracket => {
                 self.advance();
-                let mut items = Vec::new();
+                if self.at(&RBracket) {
+                    self.advance();
+                    return Ok(Expr { kind: ExprKind::ListLit(Vec::new()), span: tok_span(&t) });
+                }
+                let first = self.expr()?;
+                // Comprehension: [item for x in xs if cond]
+                if self.at(&For) {
+                    self.advance();
+                    let mut binders = vec![self.ident_tok("a loop variable after 'for'")?.0];
+                    if self.eat(&Comma) {
+                        binders.push(self.ident_tok("a second loop variable")?.0);
+                    }
+                    self.expect(&In, "'in'")?;
+                    let first_iter = self.expr()?;
+                    let iter = match self.peek_kind() {
+                        DotDot | DotDotEq => {
+                            let inclusive = matches!(self.peek_kind(), DotDotEq);
+                            self.advance();
+                            let end = self.expr()?;
+                            Iter::Range { start: first_iter, end, inclusive }
+                        }
+                        _ => Iter::Expr(first_iter),
+                    };
+                    let cond = if self.eat(&If) {
+                        Some(Box::new(self.expr()?))
+                    } else {
+                        None
+                    };
+                    self.expect(&RBracket, "']'")?;
+                    return Ok(Expr {
+                        kind: ExprKind::Comprehension {
+                            item: Box::new(first),
+                            binders,
+                            iter: Box::new(iter),
+                            cond,
+                        },
+                        span: tok_span(&t),
+                    });
+                }
+                let mut items = vec![first];
                 if !self.at(&RBracket) {
                     loop {
-                        items.push(self.expr()?);
                         if !self.eat(&Comma) {
                             break;
                         }
                         if self.at(&RBracket) {
                             break; // trailing comma
                         }
+                        items.push(self.expr()?);
                     }
                 }
                 self.expect(&RBracket, "']'")?;

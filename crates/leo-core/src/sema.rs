@@ -84,6 +84,19 @@ pub struct FnInfo {
     pub is_extern: bool,
     pub header: String,
     pub receiver: Option<String>,
+    /// Parameter default expressions, aligned with params (None when the
+    /// parameter is required). Filled for user-declared functions.
+    pub defaults: Vec<Option<Expr>>,
+}
+
+/// A function expression's capture list: name -> type, by value.
+#[derive(Debug, Clone)]
+pub struct ClosureInfo {
+    pub key: String,
+    pub params: Vec<Ty>,
+    pub ret: Ty,
+    /// Captured outer locals, by value, in env-field order.
+    pub captures: Vec<(String, Ty)>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +127,9 @@ pub enum ListOp {
     Reverse,
     Contains,
     IndexOf,
+    Map,
+    Filter,
+    Reduce,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +160,10 @@ pub enum CallTarget {
     ToCStr,
     /// n.to_str() -> str on int/float/bool
     ToStr,
+    /// Call through a function value: closures and named fns as values.
+    ClosureCall(String),
+    /// Argument position holding a function value (map/filter/reduce).
+    FnArg,
     /// float(int)
     BuiltinFloat,
     /// int(float)
@@ -153,6 +173,8 @@ pub enum CallTarget {
 pub struct Analysis {
     pub structs: HashMap<String, StructInfo>,
     pub fns: HashMap<String, FnInfo>,
+    /// Function expressions: key -> closure info.
+    pub closures: HashMap<String, ClosureInfo>,
     pub consts: HashMap<String, ConstVal>,
     /// (module, expr span start) -> inferred type.
     pub ty: HashMap<(String, u32), Ty>,
@@ -209,6 +231,7 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
     let mut a = Analysis {
         structs: HashMap::new(),
         fns: HashMap::new(),
+        closures: HashMap::new(),
         consts: HashMap::new(),
         ty: HashMap::new(),
         call: HashMap::new(),
@@ -270,6 +293,7 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
                             module: mname.clone(),
                             name: f.name.clone(),
                             params: Vec::new(),
+                            defaults: Vec::new(),
                             ret: Ty::Err,
                             exported: f.exported,
                             is_extern: false,
@@ -292,6 +316,7 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
                             module: mname.clone(),
                             name: name.clone(),
                             params: Vec::new(),
+                            defaults: Vec::new(),
                             ret: Ty::Err,
                             exported: true,
                             is_extern: true,
@@ -349,6 +374,7 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
                 Item::Fn(f) => {
                     let mangled = mangle_fn(mname, f);
                     let mut params = Vec::new();
+                    let mut defaults = Vec::new();
                     for p in &f.params {
                         let ty = if p.is_self {
                             Ty::Struct(format!("s_{}_{}", mname, f.receiver.clone().unwrap_or_default()))
@@ -356,10 +382,12 @@ pub fn analyze(sources: Vec<(String, Module)>, entry: &str) -> Analysis {
                             conv_type(&p.ty, mname, &a)
                         };
                         params.push(ParamInfo { name: p.name.clone(), ty, is_self: p.is_self });
+                        defaults.push(p.default.clone());
                     }
                     let declared = f.ret.as_ref().map(|r| conv_type(r, mname, &a));
                     if let Some(fi) = a.fns.get_mut(&mangled) {
                         fi.params = params;
+                        fi.defaults = defaults;
                         fi.ret = declared.clone().unwrap_or(Ty::Err);
                     }
                     // receiver must exist; method names must not collide with fields
@@ -1080,6 +1108,53 @@ fn infer_stmt(st: &Stmt, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> Optio
             }
             None
         }
+        StmtKind::AssignMulti { targets, value } => {
+            let vt = infer_expr(value, module, a, ctx);
+            match &vt {
+                Ty::Tuple(a_t, b_t) if targets.len() == 2 => {
+                    let (ta, tb) = ((**a_t).clone(), (**b_t).clone());
+                    for (t, want) in targets.iter().zip([ta.clone(), tb.clone()]) {
+                        if let LValue::Ident(n) = t {
+                            let prev_opt = ctx.lookup(n);
+                            match prev_opt {
+                                Some(prev) => {
+                                    if prev != want && want != Ty::Err && prev != Ty::Err {
+                                        a.err(
+                                            format!(
+                                                "'{}' is {}; the tuple holds {}",
+                                                n,
+                                                prev.show(a),
+                                                want.show(a)
+                                            ),
+                                            st.span,
+                                            module,
+                                        );
+                                    }
+                                }
+                                None => {
+                                    a.err(
+                                        format!("name '{}' is not declared; write let {} = ... first", n, n),
+                                        st.span,
+                                        module,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                other => {
+                    a.err(
+                        format!(
+                            "tuple assignment needs a 2-tuple on the right, got {}",
+                            other.show(a)
+                        ),
+                        st.span,
+                        module,
+                    );
+                }
+            }
+            None
+        }
         StmtKind::Expr(e) => {
             infer_expr(e, module, a, ctx);
             None
@@ -1440,6 +1515,142 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
             let ty = infer_expr(y, module, a, ctx);
             Ty::Tuple(Box::new(tx), Box::new(ty))
         }
+        ExprKind::FnExpr(f) => {
+            // Register a closure signature and capture list.
+            let key = format!("lam_{}_{}", module, a.closures.len());
+            let mut params = Vec::new();
+            for p in &f.params {
+                params.push(conv_type(&p.ty, module, a));
+            }
+            // Body sees its own params plus the enclosing scope for
+            // capture analysis; infer in a fresh scope.
+            ctx.scopes.push(HashMap::new());
+            for (p, ty) in f.params.iter().zip(params.iter()) {
+                ctx.declare(&p.name, ty.clone());
+            }
+            let declared = f.ret.as_ref().map(|r| conv_type(r, module, a));
+            // Record which outer locals the body reads: pre-scan idents.
+            let before = capture_free_names(&f.body, ctx);
+            let mut captures = Vec::new();
+            for name in &before {
+                if let Some(t) = ctx.lookup(name) {
+                    captures.push((name.clone(), t.clone()));
+                }
+            }
+            let sub_captures = captures.clone();
+            let mut sub = Ctx {
+                scopes: vec![HashMap::new()],
+                ret: declared.clone().unwrap_or(Ty::Err),
+                loop_depth: 0,
+            };
+            // Captures resolve to their captured types inside the body.
+            for (cname, cty) in sub_captures.iter() {
+                sub.declare(cname, cty.clone());
+            }
+            for (p, ty) in f.params.iter().zip(params.iter()) {
+                sub.declare(&p.name, ty.clone());
+            }
+            let inferred = infer_block(
+                &f.body,
+                module,
+                a,
+                &mut sub,
+                declared.clone().unwrap_or(Ty::Err),
+                f.ret.is_none(),
+            );
+            ctx.scopes.pop();
+            if let Some(d) = &declared {
+                if *d != inferred && inferred != Ty::Err {
+                    a.err(
+                        format!(
+                            "closure declares {} but its body returns {}",
+                            d.show(a),
+                            inferred.show(a)
+                        ),
+                        e.span,
+                        module,
+                    );
+                }
+            }
+            a.closures.insert(
+                key.clone(),
+                ClosureInfo {
+                    key: key.clone(),
+                    params: params.clone(),
+                    ret: inferred.clone(),
+                    captures,
+                },
+            );
+            Ty::Func(key)
+        }
+        ExprKind::Comprehension { item, binders, iter, cond } => {
+            // binder type from the iterable
+            let it = match &**iter {
+                Iter::Range { start, end, .. } => {
+                    let st = infer_expr(start, module, a, ctx);
+                    let et = infer_expr(end, module, a, ctx);
+                    if st != Ty::Int || et != Ty::Int {
+                        a.err("range bounds must be int".to_string(), e.span, module);
+                    }
+                    Ty::Int
+                }
+                Iter::Expr(ie) => infer_expr(ie, module, a, ctx),
+            };
+            // Two binders over pairs: [f"{k}={v}" for k, v in d.items()]
+            let pair = match &it {
+                Ty::List(t) if matches!(**t, Ty::Tuple(_, _)) => Some((**t).clone()),
+                _ => None,
+            };
+            if binders.len() == 2 {
+                let (a_t, b_t) = match pair {
+                    Some(Ty::Tuple(x, y)) => ((*x).clone(), (*y).clone()),
+                    _ => {
+                        a.err(
+                            "two comprehension binders need pairs, like d.items()".to_string(),
+                            e.span,
+                            module,
+                        );
+                        (Ty::Err, Ty::Err)
+                    }
+                };
+                a.for_binders.insert(
+                    (module.to_string(), e.span.start),
+                    vec![a_t.clone(), b_t.clone()],
+                );
+                ctx.scopes.push(HashMap::new());
+                ctx.declare(&binders[0], a_t);
+                ctx.declare(&binders[1], b_t);
+            } else {
+                let binder_ty = match &it {
+                    Ty::List(t) => (**t).clone(),
+                    Ty::Dict(k, _) => (**k).clone(),
+                    Ty::Int => Ty::Int,
+                    _ => Ty::Err,
+                };
+                if binder_ty == Ty::Err {
+                    a.err(
+                        "comprehension iterates a list, dict keys, or a range like 0..n".to_string(),
+                        e.span,
+                        module,
+                    );
+                }
+                a.for_binders.insert(
+                    (module.to_string(), e.span.start),
+                    vec![binder_ty.clone()],
+                );
+                ctx.scopes.push(HashMap::new());
+                ctx.declare(&binders[0], binder_ty);
+            }
+            if let Some(c) = cond {
+                let ct = infer_expr(c, module, a, ctx);
+                if ct != Ty::Bool && ct != Ty::Err {
+                    a.err("comprehension condition must be bool".to_string(), c.span, module);
+                }
+            }
+            let elem = infer_expr(item, module, a, ctx);
+            ctx.scopes.pop();
+            Ty::List(Box::new(elem))
+        }
         ExprKind::Cast(t, inner) => {
             let it = infer_expr(inner, module, a, ctx);
             let target = conv_type(t, module, a);
@@ -1459,6 +1670,184 @@ fn infer_expr_inner(e: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) -> 
             }
             target
         }
+    }
+}
+
+/// Names a function-expression body reads that resolve to enclosing
+/// locals: capture candidates, in first-use order, deduplicated.
+fn capture_free_names(body: &[Stmt], ctx: &Ctx) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for st in body {
+        collect_stmt_names(st, &mut out, &mut seen);
+    }
+    // Only names visible in the enclosing scopes are captures.
+    out.retain(|n| {
+        ctx.scopes
+            .iter()
+            .any(|s| s.contains_key(n) && !std::ptr::eq(s, ctx.scopes.last().unwrap()))
+    });
+    out
+}
+
+fn add_name(n: &str, out: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+    if seen.insert(n.to_string()) {
+        out.push(n.to_string());
+    }
+}
+
+fn collect_stmt_names(st: &Stmt, out: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+    match &st.kind {
+        StmtKind::Let { binders, value, .. } => {
+            collect_expr_names(value, out, seen);
+            for b in binders {
+                seen.insert(b.clone());
+            }
+        }
+        StmtKind::Assign { target, value } => {
+            if let LValue::Ident(n) = target {
+                add_name(n, out, seen);
+            }
+            collect_expr_names(value, out, seen);
+        }
+        StmtKind::AssignMulti { targets, value } => {
+            for t in targets {
+                if let LValue::Ident(n) = t {
+                    add_name(n, out, seen);
+                }
+            }
+            collect_expr_names(value, out, seen);
+        }
+        StmtKind::Return(v) => {
+            if let Some(e) = v.as_ref() {
+                collect_expr_names(e, out, seen);
+            }
+        }
+        StmtKind::If { cond, then, elifs, els } => {
+            collect_expr_names(cond, out, seen);
+            for b in then {
+                collect_stmt_names(b, out, seen);
+            }
+            for (c, b) in elifs {
+                collect_expr_names(c, out, seen);
+                for s in b {
+                    collect_stmt_names(s, out, seen);
+                }
+            }
+            if let Some(b) = els {
+                for s in b {
+                    collect_stmt_names(s, out, seen);
+                }
+            }
+        }
+        StmtKind::While { cond, body } => {
+            collect_expr_names(cond, out, seen);
+            for s in body {
+                collect_stmt_names(s, out, seen);
+            }
+        }
+        StmtKind::For { binders, iter, body, .. } => {
+            match iter {
+                Iter::Expr(ie) => collect_expr_names(ie, out, seen),
+                Iter::Range { start, end, .. } => {
+                    collect_expr_names(start, out, seen);
+                    collect_expr_names(end, out, seen);
+                }
+            }
+            for b in binders {
+                seen.insert(b.clone());
+            }
+            for s in body {
+                collect_stmt_names(s, out, seen);
+            }
+        }
+        StmtKind::Try { body, handler, .. } => {
+            for s in body {
+                collect_stmt_names(s, out, seen);
+            }
+            for s in handler {
+                collect_stmt_names(s, out, seen);
+            }
+        }
+        StmtKind::Raise(e) | StmtKind::Expr(e) => collect_expr_names(e, out, seen),
+        _ => {}
+    }
+}
+
+fn collect_expr_names(e: &Expr, out: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+    match &e.kind {
+        ExprKind::Ident(n) => add_name(n, out, seen),
+        ExprKind::Unary(_, i) | ExprKind::Not(i) | ExprKind::Cast(_, i) => {
+            collect_expr_names(i, out, seen)
+        }
+        ExprKind::Binary(_, l, r)
+        | ExprKind::And(l, r)
+        | ExprKind::Or(l, r)
+        | ExprKind::Compare(_, l, r)
+        | ExprKind::TupleLit(l, r) => {
+            collect_expr_names(l, out, seen);
+            collect_expr_names(r, out, seen);
+        }
+        ExprKind::Call(callee, args) => {
+            collect_expr_names(callee, out, seen);
+            for a in args {
+                collect_expr_names(a, out, seen);
+            }
+        }
+        ExprKind::Method(recv, _, args) => {
+            collect_expr_names(recv, out, seen);
+            for a in args {
+                collect_expr_names(a, out, seen);
+            }
+        }
+        ExprKind::Field(recv, _) | ExprKind::Index(recv, _) => {
+            collect_expr_names(recv, out, seen)
+        }
+        ExprKind::Slice(recv, a, b) => {
+            collect_expr_names(recv, out, seen);
+            if let Some(x) = a {
+                collect_expr_names(x, out, seen);
+            }
+            if let Some(x) = b {
+                collect_expr_names(x, out, seen);
+            }
+        }
+        ExprKind::ListLit(items) => {
+            for i in items {
+                collect_expr_names(i, out, seen);
+            }
+        }
+        ExprKind::DictLit(pairs) => {
+            for (k, v) in pairs {
+                collect_expr_names(k, out, seen);
+                collect_expr_names(v, out, seen);
+            }
+        }
+        ExprKind::FStr(parts) => {
+            for p in parts {
+                if let FStrPartAst::E(sub) = p {
+                    collect_expr_names(sub, out, seen);
+                }
+            }
+        }
+        ExprKind::Comprehension { item, binders, iter, cond } => {
+            match &**iter {
+                Iter::Expr(ie) => collect_expr_names(ie, out, seen),
+                Iter::Range { start, end, .. } => {
+                    collect_expr_names(start, out, seen);
+                    collect_expr_names(end, out, seen);
+                }
+            }
+            for b in binders {
+                seen.insert(b.clone());
+            }
+            if let Some(c) = cond {
+                collect_expr_names(c, out, seen);
+            }
+            collect_expr_names(item, out, seen);
+        }
+        ExprKind::FnExpr(_) => {}
+        _ => {}
     }
 }
 
@@ -1582,12 +1971,22 @@ fn infer_call(
 ) -> Ty {
     // Bare identifier call.
     if let ExprKind::Ident(name) = &callee.kind {
-        // function value in a local?
-        if let Some(Ty::Func(fm)) = ctx.lookup(name) {
-            let fi = a.fns.get(&fm).cloned();
-            if let Some(fi) = fi {
+        // function value in a local: closure or named fn
+        if let Some(Ty::Func(key)) = ctx.lookup(name) {
+            if let Some(ci) = a.closures.get(&key).cloned() {
+                check_closure_args(&key, &ci, args, call_expr, module, a, ctx);
+                a.call.insert(
+                    (module.to_string(), call_expr.span.start),
+                    CallTarget::ClosureCall(key),
+                );
+                return ci.ret;
+            }
+            if let Some(fi) = a.fns.get(&key).cloned() {
                 check_args(&fi, args, call_expr, module, a, ctx);
-                a.call.insert((module.to_string(), call_expr.span.start), CallTarget::Fn(fm));
+                a.call.insert(
+                    (module.to_string(), call_expr.span.start),
+                    CallTarget::ClosureCall(key),
+                );
                 return fi.ret;
             }
         }
@@ -1784,15 +2183,91 @@ fn struct_new(sm: &str, args: &[Expr], call_expr: &Expr, module: &str, a: &mut A
     Ty::Struct(sm.to_string())
 }
 
+fn check_closure_args(
+    key: &str,
+    ci: &ClosureInfo,
+    args: &[Expr],
+    call_expr: &Expr,
+    module: &str,
+    a: &mut Analysis,
+    ctx: &mut Ctx,
+) {
+    if args.len() != ci.params.len() {
+        a.err(
+            format!(
+                "this function takes {} argument{}, got {}",
+                ci.params.len(),
+                if ci.params.len() == 1 { "" } else { "s" },
+                args.len()
+            ),
+            call_expr.span,
+            module,
+        );
+    }
+    for (arg, want) in args.iter().zip(ci.params.iter()) {
+        let t = infer_expr(arg, module, a, ctx);
+        if t != *want && t != Ty::Err && *want != Ty::Err {
+            a.err(
+                format!("parameter wants {}, got {}", want.show(a), t.show(a)),
+                arg.span,
+                module,
+            );
+        }
+    }
+    let _ = key;
+}
+
 fn check_args(fi: &FnInfo, args: &[Expr], call_expr: &Expr, module: &str, a: &mut Analysis, ctx: &mut Ctx) {
-    if args.len() != fi.params.len() {
+    let needed = fi.params.len();
+    let supplied = args.len();
+    if supplied > needed {
         a.err(
             format!(
                 "'{}' takes {} argument{}, got {}",
                 fi.name,
-                fi.params.len(),
-                if fi.params.len() == 1 { "" } else { "s" },
-                args.len()
+                needed,
+                if needed == 1 { "" } else { "s" },
+                supplied
+            ),
+            call_expr.span,
+            module,
+        );
+    }
+    // Trailing parameters with defaults may be omitted.
+    let mut missing: Vec<usize> = Vec::new();
+    for i in supplied..needed {
+        match fi.defaults.get(i).and_then(|d| d.as_ref()) {
+            Some(dexpr) => {
+                // The default is evaluated at the call site.
+                let t = infer_expr(dexpr, module, a, ctx);
+                let want = fi.params[i].ty.clone();
+                if t != want && t != Ty::Err && want != Ty::Err {
+                    a.err(
+                        format!(
+                            "default for '{}' is {}, parameter wants {}",
+                            fi.params[i].name,
+                            t.show(a),
+                            want.show(a)
+                        ),
+                        call_expr.span,
+                        module,
+                    );
+                }
+            }
+            None => missing.push(i),
+        }
+    }
+    if !missing.is_empty() {
+        let names: Vec<String> = missing
+            .iter()
+            .map(|i| fi.params[*i].name.clone())
+            .collect();
+        a.err(
+            format!(
+                "'{}' is missing {}: {}",
+                fi.name,
+                if missing.len() == 1 { "argument" } else { "arguments" },
+                names.join(", ")
             ),
             call_expr.span,
             module,
@@ -1869,9 +2344,111 @@ fn infer_method(
                 "reverse" => Some(ListOp::Reverse),
                 "contains" => Some(ListOp::Contains),
                 "index_of" => Some(ListOp::IndexOf),
+                "map" => Some(ListOp::Map),
+                "filter" => Some(ListOp::Filter),
+                "reduce" => Some(ListOp::Reduce),
                 _ => None,
             };
             match op {
+                Some(op @ (ListOp::Map | ListOp::Filter | ListOp::Reduce)) => {
+                    // Higher-order: the first argument is a function value.
+                    let fn_arg = match args.first() {
+                        Some(f) => f.clone(),
+                        None => {
+                            a.err(format!("list.{} takes a function argument", name), call_expr.span, module);
+                            Expr { kind: ExprKind::Nil, span: call_expr.span }
+                        }
+                    };
+                    let ft = infer_expr(&fn_arg, module, a, ctx);
+                    let (params, fret) = match &ft {
+                        Ty::Func(key) => {
+                            if let Some(ci) = a.closures.get(key) {
+                                (ci.params.clone(), ci.ret.clone())
+                            } else if let Some(fi) = a.fns.get(key) {
+                                (fi.params.iter().map(|p| p.ty.clone()).collect(), fi.ret.clone())
+                            } else {
+                                (Vec::new(), Ty::Err)
+                            }
+                        }
+                        _ => (Vec::new(), Ty::Err),
+                    };
+                    match op {
+                        ListOp::Map => {
+                            if params.len() != 1 || params[0] != **elem {
+                                a.err(
+                                    format!(
+                                        "list.map wants a function taking {}, got one taking {}",
+                                        elem.show(a),
+                                        if params.is_empty() { "nothing".to_string() } else { params[0].show(a) }
+                                    ),
+                                    call_expr.span,
+                                    module,
+                                );
+                            }
+                            a.call.insert(
+                                (module.to_string(), call_expr.span.start),
+                                CallTarget::ListMethod(ListOp::Map),
+                            );
+                            a.call.insert(
+                                (module.to_string(), fn_arg.span.start),
+                                CallTarget::FnArg,
+                            );
+                            Ty::List(Box::new(fret))
+                        }
+                        ListOp::Filter => {
+                            if params.len() != 1 || params[0] != **elem || fret != Ty::Bool {
+                                a.err(
+                                    "list.filter wants a function taking the element and returning bool"
+                                        .to_string(),
+                                    call_expr.span,
+                                    module,
+                                );
+                            }
+                            a.call.insert(
+                                (module.to_string(), call_expr.span.start),
+                                CallTarget::ListMethod(ListOp::Filter),
+                            );
+                            a.call.insert(
+                                (module.to_string(), fn_arg.span.start),
+                                CallTarget::FnArg,
+                            );
+                            Ty::List(elem.clone())
+                        }
+                        ListOp::Reduce => {
+                            let init = args.get(1).cloned();
+                            let acc_ty = match init {
+                                Some(iexpr) => infer_expr(&iexpr, module, a, ctx),
+                                None => {
+                                    a.err(
+                                        "list.reduce takes a function and a start value"
+                                            .to_string(),
+                                        call_expr.span,
+                                        module,
+                                    );
+                                    Ty::Err
+                                }
+                            };
+                            if params.len() != 2 || params[1] != **elem || params[0] != acc_ty || fret != acc_ty {
+                                a.err(
+                                    "list.reduce wants a function taking (acc, item) returning acc"
+                                        .to_string(),
+                                    call_expr.span,
+                                    module,
+                                );
+                            }
+                            a.call.insert(
+                                (module.to_string(), call_expr.span.start),
+                                CallTarget::ListMethod(ListOp::Reduce),
+                            );
+                            a.call.insert(
+                                (module.to_string(), fn_arg.span.start),
+                                CallTarget::FnArg,
+                            );
+                            acc_ty
+                        }
+                        _ => Ty::Err,
+                    }
+                }
                 Some(op) => {
                     let expected: Vec<Ty> = match op {
                         ListOp::Push | ListOp::Contains | ListOp::IndexOf => {
@@ -1918,7 +2495,7 @@ fn infer_method(
                 None => {
                     a.err(
                         format!(
-                            "list[{}] has no method '{}'; methods: push, pop, insert, remove_at, sort, reverse, contains, index_of",
+                            "list[{}] has no method '{}'; methods: push, pop, insert, remove_at, sort, reverse, contains, index_of, map, filter, reduce",
                             elem.show(a),
                             name
                         ),

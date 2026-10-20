@@ -195,7 +195,84 @@ Construct with the struct name like a function. Methods are functions
 whose first parameter is `self`; they have no runtime cost over a plain
 function call.
 
-## 8. Errors
+## 8. Functions as values, comprehensions, and swaps
+
+A function is a value. Write one inline with `fn(...)` expressions; it
+closes over the locals it reads (captured by value when created):
+
+```leo
+fn main():
+  let base = 100
+  let addbase = fn(x: int) -> int: return base + x
+  print(addbase(5))
+```
+
+Name a function and pass it around the same way:
+
+```leo
+fn double(x: int) -> int:
+  return x * 2
+
+fn main():
+  let d = double
+  print(d(21))
+```
+
+Lists understand `map`, `filter`, and `reduce` with any function value:
+
+```leo
+fn double(x: int) -> int:
+  return x * 2
+
+fn main():
+  let xs = [1, 2, 3, 4, 5, 6]
+  print(xs.map(double)[0])
+  print(len(xs.filter(fn(x: int) -> bool: return x % 2 == 0)))
+  print(xs.reduce(fn(acc: int, x: int) -> int: return acc + x, 0))
+```
+
+Comprehensions build lists from lists, dict keys, or ranges:
+
+```leo
+fn main():
+  let xs = [1, 2, 3, 4, 5, 6]
+  let big = [x * 10 for x in xs if x > 3]
+  print(len(big), big[0])
+  let words = [f"n{x}" for x in xs]
+  print(words[2])
+```
+
+Two binders iterate pairs, so dict items compose with comprehensions:
+
+```leo
+fn main():
+  let ages = {"panda": 30, "leo": 1}
+  let pairs = [f"{k}={v}" for k, v in ages.items()]
+  print(pairs[0])
+```
+
+Swap (and any two-target tuple assignment) with one line:
+
+```leo
+fn main():
+  let a = 1
+  let b = 2
+  a, b = b, a
+  print(a, b)
+```
+
+Parameters can carry defaults, evaluated at the call site:
+
+```leo
+fn greet(name: str, greeting: str = "hello") -> str:
+  return f"{greeting}, {name}"
+
+fn main():
+  print(greet("leo"))
+  print(greet("panda", "yo"))
+```
+
+## 9. Errors
 
 Runtime failures (bad index, bad division, failed assert) stop the
 program with a message and the file and line. For expected failures,
@@ -209,7 +286,7 @@ fn main():
     print(f"caught: {e}")
 ```
 
-## 9. Modules and packages
+## 10. Modules and packages
 
 Standard modules load with `import` and are used by qualified name:
 
@@ -234,7 +311,7 @@ That clones into `leo_packages/` and pins the commit in `leo.lock`. Then
 `import mypkg` just works. Publishing a package means pushing a git
 repository with `mypkg.leo` at its root.
 
-## 10. Talking to C
+## 11. Talking to C
 
 Declare any C function and call it. This is how Leo reaches the whole C
 ecosystem: GUI toolkits, databases, syscalls, kernel interfaces.
@@ -251,7 +328,7 @@ Types map directly: `int` to `long long`, `float` to `double`,
 integers with `cast`, and get a C string with `s.to_cstr()`.
 Variadic C functions are not supported in v0.1.
 
-## 11. Inline assembly and freestanding builds
+## 12. Inline assembly and freestanding builds
 
 For kernels and bare-metal targets:
 
@@ -275,8 +352,8 @@ Freestanding programs use the value types (`int`, `float`, `bool`,
 - parameters carry types; everything else is inferred
 - `int / int` truncates; write `float(a) / b` for real division
 - no truthiness: conditions are `bool`
-- no closures, no classes, no exceptions hierarchy; `try`/`except` with
-  plain values
+- no classes and no exceptions hierarchy; `try`/`except` with plain
+  values; closures capture by value, not by reference
 - tuples exist for multiple returns and dict pairs, nothing else
 - recursive functions declare their return type
 

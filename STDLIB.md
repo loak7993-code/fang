@@ -66,6 +66,9 @@ fn main():
 | `insert(i, v)` | insert at index |
 | `remove_at(i)` | remove at index |
 | `sort()` | ascending, int/float/str elements only |
+| `map(fn)` | `-> list[R]` any function taking one element |
+| `filter(fn)` | `-> list[T]` function returning bool |
+| `reduce(fn, init)` | fold with `(acc, item) -> acc` |
 | `reverse()` | in place |
 | `contains(v)` | `-> bool` |
 | `index_of(v)` | `-> int`, -1 when missing |

@@ -137,6 +137,36 @@ leo_str* leo_tcp_recv_all(void* sock);
 void leo_tcp_close(void* sock);
 
 /* ------------------------------------------------------------------ */
+/* Closures: a function pointer plus an environment. Refcounted.      */
+/* ------------------------------------------------------------------ */
+
+typedef void (*leo_destroy_fn)(void* env);
+
+typedef struct leo_closure {
+    int64_t rc;
+    void* env;
+    void* fnptr;
+    leo_destroy_fn destroy;
+} leo_closure;
+
+static inline leo_closure* leo_closure_new(void* env, void* fnptr, leo_destroy_fn destroy) {
+    leo_closure* c = (leo_closure*)malloc(sizeof(leo_closure));
+    if (!c) leo_panic("out of memory", "<runtime>", 0);
+    c->rc = 1;
+    c->env = env;
+    c->fnptr = fnptr;
+    c->destroy = destroy;
+    return c;
+}
+
+static inline void leo_closure_decref(leo_closure* c) {
+    if (c && c->rc != LEO_RC_STATIC && --c->rc == 0) {
+        if (c->destroy && c->env) c->destroy(c->env);
+        free(c);
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* Sorting for the stamped list types.                                 */
 /* ------------------------------------------------------------------ */
 

@@ -41,7 +41,7 @@ constdecl   = [ "export" ] "let" ident "=" constexpr ;
 funcdef     = [ "export" ] "fn" qualident "(" [ params ] ")" [ "->" type ] block ;
 qualident   = ident [ "." ident ] ;
 params      = param { "," param } ;
-param       = "self" | ident ":" type ;
+param       = "self" | ident ":" type [ "=" expr ] ;
 type        = "int" | "float" | "bool" | "str" | "ptr"
             | "list" "[" type "]" | "dict" "[" type "," type "]"
             | "(" type "," type ")"
@@ -58,6 +58,7 @@ stmt        = letdecl | assign | "return" [ expr ]
             | exprstmt ;
 letdecl     = "let" binders [ ":" type ] "=" expr ;
 binders     = ident [ "," ident ] ;
+tupleassign = lvalue "," lvalue "=" rhs "," rhs ;
 assign      = lvalue "=" expr ;
 lvalue      = ident | lvalue "[" expr "]" | lvalue "." ident ;
 ifstmt      = "if" expr block { "elif" expr block } [ "else" block ] ;
@@ -81,7 +82,11 @@ postfix     = primary { "(" [ args ] ")" | "." ident | indexorslice } ;
 indexorslice= "[" [ expr ] ":" [ expr ] "]" | "[" expr "]" ;
 primary     = int | float | string | fstring | "true" | "false" | "nil"
             | ident | "(" expr ")" | tuplelit | listlit | dictlit
-            | "cast" "[" type "]" "(" expr ")" ;
+            | "cast" "[" type "]" "(" expr ")"
+            | fnexpr | comprehension ;
+fnexpr      = "fn" "(" [ params ] ")" [ "->" type ] ":" ( block | "return" expr ) ;
+comprehension = "[" expr "for" binders "in" ( expr | expr ".." [ "=" ] expr )
+                [ "if" expr ] "]" ;
 tuplelit    = "(" expr "," expr ")" ;
 listlit     = "[" [ expr { "," expr } ] "]" ;
 dictlit     = "{" [ expr ":" expr { "," expr ":" expr } ] "}" ;
@@ -197,7 +202,29 @@ crt0 and linker script.
 | `xs[a:b]` | slice; missing bounds mean start/end |
 | `-x` | numeric negation |
 
-## 10. Builtins
+## 10. Function values and closures
+
+`fn(...)` expressions create function values. A closure captures the
+outer locals it reads by value at creation time (not by reference). Any
+`fn` name also converts to a value. Calls through function values are
+statically typed by the signature. `list.map`, `list.filter`, and
+`list.reduce` take function values.
+
+## 11. Comprehensions
+
+`[expr for x in iter [if cond]]` builds a list. `iter` is a list, dict
+keys, or a range. Two binders iterate pairs (`d.items()`).
+
+## 12. Default parameters
+
+Trailing parameters may declare defaults with `=`. Defaults are
+evaluated at the call site, not at declaration.
+
+## 13. Tuple assignment
+
+`a, b = rhs` unpacks a 2-tuple into two lvalues; `a, b = b, a` swaps.
+
+## 14. Builtins
 
 | Name | Signature | Notes |
 |------|-----------|-------|

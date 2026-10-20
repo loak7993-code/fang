@@ -37,6 +37,9 @@ pub fn generate(
         pool_order: Vec::new(),
         used_headers: BTreeSet::new(),
         used_eq_helpers: HashSet::new(),
+        extra_decls: std::cell::RefCell::new(String::new()),
+        extra_fns: std::cell::RefCell::new(String::new()),
+        stamped_sigs: std::cell::RefCell::new(HashSet::new()),
     };
     g.run(entry)
 }
@@ -50,6 +53,12 @@ struct Gen<'a> {
     pool_order: Vec<String>,
     used_headers: BTreeSet<String>,
     used_eq_helpers: HashSet<String>,
+    /// Trampolines, env structs, adapters: emitted after fn bodies.
+    extra_decls: std::cell::RefCell<String>,
+    /// Lambda body functions: emitted after fn bodies.
+    extra_fns: std::cell::RefCell<String>,
+    /// Signature keys already stamped.
+    stamped_sigs: std::cell::RefCell<HashSet<String>>,
 }
 
 impl<'a> Gen<'a> {
@@ -173,6 +182,8 @@ impl<'a> Gen<'a> {
             writeln!(self.out, "static {} {}({});", ret, fi.mangled, params).unwrap();
         }
         writeln!(self.out).unwrap();
+        // Extras (lambda bodies, trampolines) are spliced here at the end.
+        writeln!(self.out, "/*__LEO_EXTRAS__*/").unwrap();
 
         // Bodies.
         for u in self.sources {
@@ -187,6 +198,13 @@ impl<'a> Gen<'a> {
                 }
             }
         }
+
+        // Lambda bodies, trampolines, and adapters discovered during
+        // function generation: spliced before the bodies that use them.
+        let extra_d = self.extra_decls.borrow().clone();
+        let extra_f = self.extra_fns.borrow().clone();
+        let extras = format!("{}{}", extra_d, extra_f);
+        self.out = self.out.replacen("/*__LEO_EXTRAS__*/", &extras, 1);
 
         // Entry wrapper.
         let entry_main = format!("f_{}_main", entry);
@@ -237,7 +255,7 @@ impl<'a> Gen<'a> {
             Ty::Dict(k, v) => format!("leo_dict_{}_{}*", self.sfx(k), self.sfx(v)),
             Ty::Tuple(a, b) => format!("leo_tuple_{}_{}", self.sfx(a), self.sfx(b)),
             Ty::Struct(m) => format!("leo_{}", m),
-            Ty::Func(m) => m.clone(),
+            Ty::Func(_) => "leo_closure*".into(),
             Ty::Any => "leo_str*".into(),
             Ty::Void | Ty::Err => "void".into(),
         }
@@ -260,12 +278,13 @@ impl<'a> Gen<'a> {
     }
 
     fn is_rc(&self, t: &Ty) -> bool {
-        matches!(t, Ty::Str | Ty::List(_) | Ty::Dict(_, _))
+        matches!(t, Ty::Str | Ty::List(_) | Ty::Dict(_, _) | Ty::Func(_))
     }
 
     fn decref_stmt(&self, expr: &str, t: &Ty) -> String {
         match t {
             Ty::Str => format!("leo_str_decref({});", expr),
+            Ty::Func(_) => format!("leo_closure_decref({});", expr),
             Ty::List(e) => format!("leo_list_{}_decref({});", self.sfx(e), expr),
             Ty::Dict(k, v) => {
                 format!("leo_dict_{}_{}_decref({});", self.sfx(k), self.sfx(v), expr)
@@ -520,6 +539,7 @@ impl<'a> Gen<'a> {
             module: u.name.clone(),
             path: u.path.clone(),
             a: self.a,
+            captures: HashMap::new(),
             buf: String::new(),
             indent: 1,
             scopes: vec![HashMap::new()],
@@ -629,6 +649,8 @@ struct FnGen<'a> {
     module: String,
     path: String,
     a: &'a Analysis,
+    /// Lambda body generation: captured name -> C member expression.
+    captures: HashMap<String, String>,
     buf: String,
     indent: usize,
     scopes: Vec<HashMap<String, Var>>,
@@ -752,6 +774,64 @@ impl<'a> FnGen<'a> {
                             }
                         }
                         _ => {}
+                    }
+                }
+                self.flush_temps(g);
+            }
+            StmtKind::AssignMulti { targets, value } => {
+                self.line_of(st);
+                let vt = self.a.ty[&(self.module.clone(), value.span.start)].clone();
+                let (at, bt) = match &vt {
+                    Ty::Tuple(a, b) => ((**a).clone(), (**b).clone()),
+                    _ => (Ty::Err, Ty::Err),
+                };
+                let (code, _t, fresh) = self.gen_expr(value, g);
+                let tmp = format!("__mt{}", self.temp());
+                let tname = format!(
+                    "leo_tuple_{}_{}",
+                    g.sfx(&at),
+                    g.sfx(&bt)
+                );
+                self.w(&format!(
+                    "{} {} = {};",
+                    tname, tmp, code
+                ));
+                if !fresh && (g.is_rc(&at) || g.is_rc(&bt)) {
+                    // borrowed tuple fields: they were materialized already
+                }
+                for (i, t) in targets.iter().enumerate() {
+                    let (part_ty, part) = if i == 0 {
+                        (at.clone(), format!("{}.a", tmp))
+                    } else {
+                        (bt.clone(), format!("{}.b", tmp))
+                    };
+                    if let LValue::Ident(n) = t {
+                        let v = self.lookup(n).cloned();
+                        if let Some(v) = v {
+                            let field = v.field.clone();
+                            match &v.ty {
+                                Ty::Struct(m) => {
+                                    for sd in g.struct_field_decref(&format!("f.{}", field), m) {
+                                        self.w(&sd);
+                                    }
+                                    self.w(&format!("f.{} = {};", field, part));
+                                    for si in g.struct_field_incref(&format!("f.{}", field), m) {
+                                        self.w(&si);
+                                    }
+                                }
+                                tt if g.is_rc(tt) => {
+                                    let d = g.decref_stmt(&format!("f.{}", field), tt);
+                                    if !d.is_empty() {
+                                        self.w(&d);
+                                    }
+                                    self.w(&format!("f.{} = {};", field, part));
+                                    if !g.is_rc(&part_ty) {
+                                        let _ = part_ty;
+                                    }
+                                }
+                                _ => self.w(&format!("f.{} = {};", field, part)),
+                            }
+                        }
                     }
                 }
                 self.flush_temps(g);
@@ -1255,6 +1335,94 @@ impl<'a> FnGen<'a> {
 
     /// Generate an expression. Returns (C text, type, fresh) where fresh
     /// means the caller owns one reference for RC types.
+    fn gen_expr_borrowed(&mut self, e: &Expr, g: &Gen) -> (String, Ty, bool) {
+        self.gen_expr(e, g)
+    }
+
+    /// Signature of a function value by key.
+    fn sig_of(&self, key: &str, g: &Gen) -> (Vec<Ty>, Ty) {
+        if let Some(ci) = g.a.closures.get(key) {
+            (ci.params.clone(), ci.ret.clone())
+        } else if let Some(fi) = g.a.fns.get(key) {
+            (fi.params.iter().map(|p| p.ty.clone()).collect(), fi.ret.clone())
+        } else {
+            (Vec::new(), Ty::Err)
+        }
+    }
+
+    /// Cleanup for a lambda body frame: releases locals + params.
+    fn cleanup_stmts(&self, g: &Gen) -> String {
+        let mut out = String::new();
+        for scope in self.scopes.iter().rev() {
+            for v in scope.values() {
+                match &v.ty {
+                    Ty::Struct(m) => {
+                        for s in g.struct_field_decref(&format!("f.{}", v.field), m) {
+                            out.push_str("    ");
+                            out.push_str(&s);
+                            out.push('\n');
+                        }
+                    }
+                    t => {
+                        let d = g.decref_stmt(&format!("f.{}", v.field), t);
+                        if !d.is_empty() {
+                            out.push_str("    ");
+                            out.push_str(&d);
+                            out.push('\n');
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// A named function used as a value: wrap it in a zero-capture closure.
+    fn gen_named_fn_value(&mut self, key: &str, g: &Gen) -> (String, Ty, bool) {
+        let fi = g.a.fns[key].clone();
+        let adapter = format!("leo_ad_{}", fi.mangled);
+        let mut params = Vec::new();
+        for (i, p) in fi.params.iter().enumerate() {
+            params.push(format!("{} p{}", g.ctype(&p.ty), i));
+        }
+        let arglist = (0..fi.params.len())
+            .map(|i| format!("p{}", i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let call = format!("{}({})", fi.mangled, arglist);
+        let ret_c = g.ctype_ret(&fi.ret);
+        if !g.stamped_sigs.borrow().contains(&adapter) {
+            g.stamped_sigs.borrow_mut().insert(adapter.clone());
+            if matches!(fi.ret, Ty::Void | Ty::Err) {
+                writeln!(
+                    g.extra_fns.borrow_mut(),
+                    "static void {adapter}(void* env, {params}) {{\n    (void)env;\n    {call};\n}}",
+                    adapter = adapter,
+                    params = params.join(", "),
+                    call = call,
+                )
+                .unwrap();
+            } else {
+                writeln!(
+                    g.extra_fns.borrow_mut(),
+                    "static {ret} {adapter}(void* env, {params}) {{\n    (void)env;\n    return {call};\n}}",
+                    ret = ret_c,
+                    adapter = adapter,
+                    params = params.join(", "),
+                    call = call,
+                )
+                .unwrap();
+            }
+        }
+        let tmp = format!("__fnv{}", self.temp());
+        self.w(&format!(
+            "leo_closure* {tmp} = leo_closure_new(NULL, (void*){adapter}, NULL);",
+            tmp = tmp,
+            adapter = adapter,
+        ));
+        (tmp, Ty::Func(key.to_string()), true)
+    }
+
     fn gen_expr(&mut self, e: &Expr, g: &Gen) -> (String, Ty, bool) {
         let ty = self
             .a
@@ -1306,8 +1474,19 @@ impl<'a> FnGen<'a> {
                 (out, Ty::Str, true)
             }
             ExprKind::Ident(name) => {
+                if let Some(member) = self.captures.get(name).cloned() {
+                    let t = self.a.ty[&(self.module.clone(), e.span.start)].clone();
+                    return (member, t, false);
+                }
                 if let Some(v) = self.lookup(name) {
                     return (format!("f.{}", v.field), v.ty.clone(), false);
+                }
+                // Named function used as a value: wrap in a closure.
+                let ty_here = self.a.ty[&(self.module.clone(), e.span.start)].clone();
+                if let Ty::Func(key) = &ty_here {
+                    if self.a.fns.contains_key(key) && !self.a.closures.contains_key(key) {
+                        return self.gen_named_fn_value(key, g);
+                    }
                 }
                 // constant
                 let cm = format!("c_{}_{}", self.module, name);
@@ -1482,6 +1661,315 @@ impl<'a> FnGen<'a> {
                     Ty::Tuple(Box::new(at), Box::new(bt)),
                     true,
                 )
+            }
+            ExprKind::FnExpr(f) => {
+                let key = match &ty {
+                    Ty::Func(k) => k.clone(),
+                    _ => "lam_unknown".to_string(),
+                };
+                let cinfo = g.a.closures.get(&key).cloned();
+                let Some(cinfo) = cinfo else {
+                    return ("NULL".into(), Ty::Err, false);
+                };
+                // Stamp the env struct, its constructor/destructor, and the
+                // body function; then create the closure value here.
+                let env_ty = format!("leo_env_{}", key);
+                let mut env_fields = String::new();
+                let mut cap_members: HashMap<String, String> = HashMap::new();
+                let _cap_args: Vec<String> = Vec::new();
+                let mut cap_tys = Vec::new();
+                for (i, (cname, cty)) in cinfo.captures.iter().enumerate() {
+                    let field = format!("cap_{}", i);
+                    env_fields.push_str(&format!("    {} {};\n", g.ctype(cty), field));
+                    cap_members.insert(cname.clone(), format!("env->{}", field));
+                    cap_tys.push(cty.clone());
+                }
+                let mut env_new_params = Vec::new();
+                for (i, ct) in cap_tys.iter().enumerate() {
+                    env_new_params.push(format!("{} c{}", g.ctype(ct), i));
+                }
+                let mut env_new_increfs = String::new();
+                for (i, ct) in cap_tys.iter().enumerate() {
+                    if g.is_rc(ct) {
+                        env_new_increfs
+                            .push_str(&format!("    leo_incref((void*)(e->cap_{}));\n", i));
+                    }
+                }
+                let mut env_dec = String::new();
+                for (i, ct) in cap_tys.iter().enumerate() {
+                    if g.is_rc(ct) {
+                        env_dec.push_str(&format!(
+                            "    {}\n",
+                            g.decref_stmt(&format!("e->cap_{}", i), ct).replace(";", "")
+                        ));
+                    }
+                }
+                writeln!(
+                    g.extra_decls.borrow_mut(),
+                    "typedef struct {{\n{}}} {env};\nstatic {env}* {env}_new({params}) {{\n    {env}* e = ({env}*)malloc(sizeof({env}));\n    if (!e) leo_panic(\"out of memory\", \"<runtime>\", 0);\n{assign}{increfs}    return e;\n}}\nstatic void {env}_destroy(void* ve) {{\n    {env}* e = ({env}*)ve;\n{dec}    free(e);\n}}",
+                    env_fields,
+                    env = env_ty,
+                    params = if env_new_params.is_empty() { "void".to_string() } else { env_new_params.join(", ") },
+                    assign = (0..cap_tys.len())
+                        .map(|i| format!("    e->cap_{} = c{};\n", i, i))
+                        .collect::<String>(),
+                    increfs = env_new_increfs,
+                    dec = env_dec,
+                )
+                .unwrap();
+
+                // Body function: locals frame + captures as env members.
+                let ret_c = g.ctype_ret(&cinfo.ret);
+                let mut param_names = Vec::new();
+                let mut fg = FnGen {
+                    module: self.module.clone(),
+                    path: self.path.clone(),
+                    a: g.a,
+                    captures: cap_members,
+                    buf: String::new(),
+                    indent: 1,
+                    scopes: vec![HashMap::new()],
+                    locals: Vec::new(),
+                    has_temps: Vec::new(),
+                    frame: String::new(),
+                    field_n: 0,
+                    temp_n: 0,
+                    ret: cinfo.ret.clone(),
+                };
+                let mut proto_params = vec![format!("{}* env", env_ty)];
+                for (i, pt) in cinfo.params.iter().enumerate() {
+                    let pname = f.params.get(i).map(|p| p.name.clone()).unwrap_or_else(|| format!("p{}", i));
+                    proto_params.push(format!("{} p{}", g.ctype(pt), i));
+                    param_names.push(pname);
+                }
+                for (i, pt) in cinfo.params.iter().enumerate() {
+                    let field = format!("{}__{}", param_names[i], fg.next_field());
+                    let inc = if g.is_rc(pt) {
+                        format!("    leo_incref((void*)(p{}));\n", i)
+                    } else {
+                        String::new()
+                    };
+                    fg.frame.push_str(&format!("    {} {};\n", g.ctype(pt), field));
+                    fg.buf.push_str(&format!("    f.{} = p{};\n{}", field, i, inc));
+                    let var = Var { field: field.clone(), ty: pt.clone() };
+                    fg.scopes.last_mut().unwrap().insert(param_names[i].clone(), var.clone());
+                    fg.locals.push(var);
+                }
+                fg.stmts(&f.body, g);
+                let cleanup = fg.cleanup_stmts(g);
+                fg.buf.push_str(&cleanup);
+                let is_void = matches!(cinfo.ret, Ty::Void | Ty::Err);
+                let ret_decl = if is_void { String::new() } else {
+                    format!("    {} __ret;\n", ret_c)
+                };
+                let init = if fg.frame.trim().is_empty() { String::new() } else { " = {0}".to_string() };
+                writeln!(
+                    g.extra_fns.borrow_mut(),
+                    "static {ret} leo_{key}({params}) {{\n{ret_decl}    struct {{\n{frame}    }} f{init};\n{body}__exit: ;\n{ret_stmt}}}",
+                    ret = ret_c,
+                    key = key,
+                    params = proto_params.join(", "),
+                    ret_decl = ret_decl,
+                    frame = fg.frame,
+                    init = init,
+                    body = fg.buf,
+                    ret_stmt = if is_void { "    return;\n".to_string() } else { "    return __ret;\n".to_string() },
+                )
+                .unwrap();
+
+                // Create the closure at this site.
+                let tmp = format!("__lam{}", self.temp());
+                let mut cap_exprs = Vec::new();
+                for (cname, _) in &cinfo.captures {
+                    if let Some(v) = self.lookup(cname) {
+                        cap_exprs.push(format!("f.{}", v.field));
+                    } else {
+                        cap_exprs.push("NULL".into());
+                    }
+                }
+                self.w(&format!(
+                    "leo_closure* {tmp} = leo_closure_new({env}_new({caps}), (void*)leo_{key}, {env}_destroy);",
+                    tmp = tmp,
+                    env = env_ty,
+                    caps = cap_exprs.join(", "),
+                    key = key,
+                ));
+                (tmp, Ty::Func(key), true)
+            }
+            ExprKind::Comprehension { item, binders, iter, cond } => {
+                let elem = match &ty {
+                    Ty::List(t) => (**t).clone(),
+                    _ => Ty::Err,
+                };
+                let sfx = g.sfx(&elem);
+                // Range iters loop on a counter; collection iters walk
+                // a materialized list (dicts iterate their keys).
+                let is_range = matches!(&**iter, Iter::Range { .. });
+                let (it_var, loop_head, needs_release) = if is_range {
+                    let (s, start_expr, _, _) = match &**iter {
+                        Iter::Range { start, .. } => {
+                            let se = self.gen_expr(start, g);
+                            (start, se, Ty::Int, ())
+                        }
+                        _ => unreachable!(),
+                    };
+                    let _ = s;
+                    let (start_code, _, _) = (start_expr.0.clone(), start_expr.1.clone(), start_expr.2);
+                    let (end_code, _, _) = match &**iter {
+                        Iter::Range { end, .. } => self.gen_expr(end, g),
+                        _ => unreachable!(),
+                    };
+                    let inclusive = matches!(&**iter, Iter::Range { inclusive: true, .. });
+                    let var = format!("__ci{}", self.temp());
+                    (
+                        var.clone(),
+                        format!(
+                            "for (int64_t {} = {}, __ce = {}; {} {} __ce; {}++) {{",
+                            var,
+                            start_code,
+                            end_code,
+                            var,
+                            if inclusive { "<=" } else { "<" },
+                            var
+                        ),
+                        false,
+                    )
+                } else {
+                    let it = self.a.ty[&(self.module.clone(), e.span.start)].clone();
+                    let _ = it;
+                    let it_ty = match &**iter {
+                        Iter::Expr(ie) => self.a.ty[&(self.module.clone(), ie.span.start)].clone(),
+                        _ => Ty::Err,
+                    };
+                    let (code, _, fresh) = match &**iter {
+                        Iter::Expr(ie) => self.gen_expr(ie, g),
+                        _ => ("0".into(), Ty::Int, false),
+                    };
+                    let list_ty = match &it_ty {
+                        Ty::Dict(k, _) => Ty::List(k.clone()),
+                        other => other.clone(),
+                    };
+                    let list_expr = match &it_ty {
+                        Ty::Dict(k, v) => format!(
+                            "leo_dict_{}_{}_keys({})",
+                            g.sfx(k),
+                            g.sfx(v),
+                            code
+                        ),
+                        _ => code.clone(),
+                    };
+                    let var = format!("__cit{}", self.temp());
+                    self.w(&format!(
+                        "{} {} = {};",
+                        g.ctype(&list_ty),
+                        var,
+                        list_expr
+                    ));
+                    let release = (fresh || matches!(it_ty, Ty::Dict(_, _))) && g.is_rc(&list_ty);
+                    (
+                        var.clone(),
+                        format!("for (int64_t __cj = 0; __cj < {}->len; __cj++) {{", var),
+                        release,
+                    )
+                };
+                let out = format!("__cmp{}", self.temp());
+                self.w(&format!(
+                    "leo_list_{}* {} = leo_list_{}_new();",
+                    sfx, out, sfx
+                ));
+                // binder types from sema
+                let binder_tys = g.a
+                    .for_binders
+                    .get(&(self.module.clone(), e.span.start))
+                    .cloned()
+                    .unwrap_or_default();
+                self.scopes.push(HashMap::new());
+                let mut binder_fields: Vec<(String, Ty)> = Vec::new();
+                for (bi, b) in binders.iter().enumerate() {
+                    let bt = binder_tys.get(bi).cloned().unwrap_or(Ty::Err);
+                    let bf = format!("{}__{}", b, self.next_field());
+                    self.frame.push_str(&format!("    {} {};\n", g.ctype(&bt), bf));
+                    self.scopes.last_mut().unwrap().insert(
+                        b.clone(),
+                        Var { field: bf.clone(), ty: bt.clone() },
+                    );
+                    self.locals.push(Var { field: bf.clone(), ty: bt.clone() });
+                    binder_fields.push((bf, bt));
+                }
+                self.w(&loop_head);
+                self.indent += 1;
+                if is_range {
+                    self.w(&format!("f.{} = {};", binder_fields[0].0, it_var));
+                } else if binder_fields.len() == 2 {
+                    let cpn = self.temp();
+                    let cp = format!("__cp{}", cpn);
+                    self.w(&format!(
+                        "leo_tuple_{}_{} {} = {}->elems[__cj];",
+                        g.sfx(&binder_fields[0].1),
+                        g.sfx(&binder_fields[1].1),
+                        cp,
+                        it_var
+                    ));
+                    self.w(&format!("f.{} = {}.a;", binder_fields[0].0, cp));
+                    self.w(&format!("f.{} = {}.b;", binder_fields[1].0, cp));
+                } else {
+                    self.w(&format!(
+                        "f.{} = {}->elems[__cj];",
+                        binder_fields[0].0, it_var
+                    ));
+                }
+                for (bf, bt) in &binder_fields {
+                    match bt {
+                        t if g.is_rc(t) => {
+                            self.w(&format!("leo_incref((void*)(f.{}));", bf));
+                        }
+                        Ty::Struct(m) => {
+                            for si in g.struct_field_incref(&format!("f.{}", bf), m) {
+                                self.w(&si);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(c) = cond {
+                    let (cc, _, _) = self.gen_expr(c, g);
+                    self.w(&format!("if ({}) {{", cc));
+                    self.indent += 1;
+                }
+                let (icode, it2, ifr) = self.gen_expr(item, g);
+                if g.is_rc(&it2) && !ifr {
+                    self.w(&format!("leo_incref((void*)({}));", icode));
+                }
+                self.w(&format!("leo_list_{}_push({}, {});", sfx, out, icode));
+                if cond.is_some() {
+                    self.indent -= 1;
+                    self.w("}");
+                }
+                // per-iteration binder cleanup
+                for (bf, bt) in &binder_fields {
+                    match bt {
+                        t if g.is_rc(t) => {
+                            let d = g.decref_stmt(&format!("f.{}", bf), t);
+                            if !d.is_empty() {
+                                self.w(&d);
+                            }
+                        }
+                        Ty::Struct(m) => {
+                            for sd in g.struct_field_decref(&format!("f.{}", bf), m) {
+                                self.w(&sd);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                self.indent -= 1;
+                self.w("}");
+                if needs_release {
+                    let d = g.decref_stmt(&it_var, &Ty::List(Box::new(Ty::Err)));
+                    let _ = d;
+                }
+                self.scopes.pop();
+                (out, ty.clone(), true)
             }
             ExprKind::Cast(t, inner) => {
                 let (code, it, _) = self.gen_expr(inner, g);
@@ -1675,6 +2163,12 @@ impl<'a> FnGen<'a> {
 
         let skip_first = matches!(&target, Some(CallTarget::FnSelf(_)));
         match target {
+            Some(CallTarget::FnArg) => {
+                for arg in args {
+                    let _ = self.gen_expr(arg, g);
+                }
+                ("NULL".into(), Ty::Err, false)
+            }
             Some(CallTarget::Fn(mangled)) | Some(CallTarget::FnSelf(mangled)) => {
                 let fi = g.a.fns[&mangled].clone();
                 let call_name = if fi.is_extern { fi.c_name.clone() } else { mangled.clone() };
@@ -1688,6 +2182,22 @@ impl<'a> FnGen<'a> {
                     }
                     let _ = at;
                     arg_codes.push(code);
+                }
+                // Omitted trailing parameters fill from their defaults,
+                // evaluated here at the call site.
+                let first_missing = if skip_first { args.len() + 1 } else { args.len() };
+                for pi in first_missing..fi.params.len() {
+                    if let Some(Some(def)) = fi.defaults.get(pi).map(|d| d.as_ref()) {
+                        let pt = fi.params[pi].ty.clone();
+                        let saved_module = self.module.clone();
+                        self.module = fi.module.clone();
+                        let (code, _, fr) = self.gen_expr(def, g);
+                        self.module = saved_module;
+                        if g.is_rc(&pt) && !fr {
+                            self.w(&format!("leo_incref((void*)({}));", code));
+                        }
+                        arg_codes.push(code);
+                    }
                 }
                 let fresh = g.is_rc(&ret_ty);
                 (
@@ -1792,6 +2302,108 @@ impl<'a> FnGen<'a> {
                             sfx, recv_code, ic
                         ));
                         ("0".into(), Ty::Void, false)
+                    }
+                    ListOp::Map => {
+                        let arg0 = args.first().cloned();
+                        let Some(fn_arg) = arg0 else {
+                            return ("NULL".into(), Ty::Err, false);
+                        };
+                        let fkey = match self.a.ty[&(self.module.clone(), fn_arg.span.start)].clone() {
+                            Ty::Func(k) => k,
+                            _ => return ("NULL".into(), Ty::Err, false),
+                        };
+                        let (params, fret) = self.sig_of(&fkey, g);
+                        let sig = g.stamp_trampoline(&fkey, &params, &fret);
+                        let out_elem = fret.clone();
+                        let osfx = g.sfx(&out_elem);
+                        let (fcode, _, _) = self.gen_expr(&fn_arg, g);
+                        let out = format!("__map{}", self.temp());
+                        self.w(&format!(
+                            "leo_list_{}* {} = leo_list_{}_new();",
+                            osfx, out, osfx
+                        ));
+                        self.w(&format!(
+                            "for (int64_t __mj = 0; __mj < {}->len; __mj++) {{",
+                            recv_code
+                        ));
+                        self.indent += 1;
+                        self.w(&format!(
+                            "leo_list_{}_push({}, {}({}, {}->elems[__mj]));",
+                            osfx, out, sig, fcode, recv_code
+                        ));
+                        self.indent -= 1;
+                        self.w("}");
+                        (out, Ty::List(Box::new(out_elem)), true)
+                    }
+                    ListOp::Filter => {
+                        let arg0 = args.first().cloned();
+                        let Some(fn_arg) = arg0 else {
+                            return ("NULL".into(), Ty::Err, false);
+                        };
+                        let fkey = match self.a.ty[&(self.module.clone(), fn_arg.span.start)].clone() {
+                            Ty::Func(k) => k,
+                            _ => return ("NULL".into(), Ty::Err, false),
+                        };
+                        let (params, fret) = self.sig_of(&fkey, g);
+                        let sig = g.stamp_trampoline(&fkey, &params, &fret);
+                        let (fcode, _, _) = self.gen_expr(&fn_arg, g);
+                        let out = format!("__flt{}", self.temp());
+                        let osfx = g.sfx(&elem);
+                        self.w(&format!(
+                            "leo_list_{}* {} = leo_list_{}_new();",
+                            osfx, out, osfx
+                        ));
+                        self.w(&format!(
+                            "for (int64_t __fj = 0; __fj < {}->len; __fj++) {{",
+                            recv_code
+                        ));
+                        self.indent += 1;
+                        self.w(&format!(
+                            "if ({}({}, {}->elems[__fj])) {{",
+                            sig, fcode, recv_code
+                        ));
+                        self.indent += 1;
+                        self.w(&format!(
+                            "leo_list_{}_push({}, {}->elems[__fj]);",
+                            osfx, out, recv_code
+                        ));
+                        self.indent -= 1;
+                        self.w("}");
+                        self.indent -= 1;
+                        self.w("}");
+                        (out, Ty::List(Box::new(elem.clone())), true)
+                    }
+                    ListOp::Reduce => {
+                        let arg0 = args.first().cloned();
+                        let init = args.get(1).cloned();
+                        let (Some(fn_arg), Some(init_expr)) = (arg0, init) else {
+                            return ("NULL".into(), Ty::Err, false);
+                        };
+                        let fkey = match self.a.ty[&(self.module.clone(), fn_arg.span.start)].clone() {
+                            Ty::Func(k) => k,
+                            _ => return ("NULL".into(), Ty::Err, false),
+                        };
+                        let (params, fret) = self.sig_of(&fkey, g);
+                        let sig = g.stamp_trampoline(&fkey, &params, &fret);
+                        let (fcode, _, _) = self.gen_expr(&fn_arg, g);
+                        let (icode, it, ifr) = self.gen_expr(&init_expr, g);
+                        if g.is_rc(&it) && !ifr {
+                            self.w(&format!("leo_incref((void*)({}));", icode));
+                        }
+                        let acc = format!("__acc{}", self.temp());
+                        self.w(&format!("{} {} = {};", g.ctype(&it), acc, icode));
+                        self.w(&format!(
+                            "for (int64_t __rj = 0; __rj < {}->len; __rj++) {{",
+                            recv_code
+                        ));
+                        self.indent += 1;
+                        self.w(&format!(
+                            "{} = {}({}, {}, {}->elems[__rj]);",
+                            acc, sig, fcode, acc, recv_code
+                        ));
+                        self.indent -= 1;
+                        self.w("}");
+                        (acc, it, true)
                     }
                     ListOp::Sort => {
                         match &elem {
@@ -1928,6 +2540,41 @@ impl<'a> FnGen<'a> {
             Some(CallTarget::BuiltinInt) => {
                 let (code, _, _) = self.gen_expr(&args[0], g);
                 (format!("((int64_t)({}))", code), Ty::Int, false)
+            }
+            Some(CallTarget::ClosureCall(key)) => {
+                // Resolve the signature, stamp a trampoline, call through it.
+                let (params, ret) = {
+                    if let Some(ci) = g.a.closures.get(&key) {
+                        (ci.params.clone(), ci.ret.clone())
+                    } else if let Some(fi) = g.a.fns.get(&key) {
+                        (fi.params.iter().map(|p| p.ty.clone()).collect(), fi.ret.clone())
+                    } else {
+                        (Vec::new(), Ty::Err)
+                    }
+                };
+                let sig = g.stamp_trampoline(&key, &params, &ret);
+                let mut arg_codes = Vec::new();
+                for (i, arg) in args.iter().enumerate() {
+                    let pt = params.get(i).cloned().unwrap_or(Ty::Err);
+                    let (code, at, fr) = self.gen_expr(arg, g);
+                    if g.is_rc(&pt) && !fr && pt != Ty::Err {
+                        // borrowed argument into an owned parameter
+                        match pt {
+                            Ty::Func(_) => {}
+                            _ => self.w(&format!("leo_incref((void*)({}));", code)),
+                        }
+                    }
+                    let _ = (at, fr);
+                    arg_codes.push(code);
+                }
+                // The callee expression: the closure value itself.
+                let (ccode, _, _) = self.gen_expr_borrowed(callee, g);
+                let fresh = g.is_rc(&ret);
+                (
+                    format!("{}({}, {})", sig, ccode, arg_codes.join(", ")),
+                    ret,
+                    fresh,
+                )
             }
             Some(CallTarget::ToCStr) => {
                 let (code, _, _) = self.gen_expr(callee_as_recv(callee), g);
@@ -2108,6 +2755,11 @@ fn collect_strs(m: &Module, pool: &mut HashMap<String, String>, order: &mut Vec<
         match item {
             Item::Const { value, .. } => collect_expr_strs(value, order),
             Item::Fn(f) => {
+                for p in &f.params {
+                    if let Some(d) = &p.default {
+                        collect_expr_strs(d, order);
+                    }
+                }
                 for st in &f.body {
                     collect_stmt_strs(st, order);
                 }
@@ -2236,6 +2888,25 @@ fn collect_expr_strs(e: &Expr, order: &mut Vec<String>) {
             collect_expr_strs(b, order);
         }
         ExprKind::Cast(_, i) => collect_expr_strs(i, order),
+        ExprKind::FnExpr(f) => {
+            for st in &f.body {
+                collect_stmt_strs(st, order);
+            }
+        }
+        ExprKind::Comprehension { item, binders, iter, cond } => {
+            collect_expr_strs(item, order);
+            let _ = binders;
+            match &**iter {
+                Iter::Expr(ie) => collect_expr_strs(ie, order),
+                Iter::Range { start, end, .. } => {
+                    collect_expr_strs(start, order);
+                    collect_expr_strs(end, order);
+                }
+            }
+            if let Some(c) = cond {
+                collect_expr_strs(c, order);
+            }
+        }
         _ => {}
     }
 }
@@ -2257,6 +2928,56 @@ fn c_escape(s: &str) -> String {
 }
 
 impl<'a> Gen<'a> {
+    /// Stamp (once per signature) a trampoline that calls through a
+    /// closure's function pointer with the static signature.
+    fn stamp_trampoline(&self, key: &str, params: &[Ty], ret: &Ty) -> String {
+        let sig_name = format!("leo_call_{}", key);
+        if self.stamped_sigs.borrow().contains(&sig_name) {
+            return sig_name;
+        }
+        self.stamped_sigs.borrow_mut().insert(sig_name.clone());
+        let mut c_params = vec!["leo_closure* c".to_string()];
+        for (i, p) in params.iter().enumerate() {
+            c_params.push(format!("{} p{}", self.ctype(p), i));
+        }
+        let arglist = (0..params.len())
+            .map(|i| format!("p{}", i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let ret_c = self.ctype_ret(ret);
+        let fn_ty = format!(
+            "{} (*)(void*{}{})",
+            ret_c,
+            if params.is_empty() { "" } else { ", " },
+            params.iter().map(|p| self.ctype(p)).collect::<Vec<_>>().join(", ")
+        );
+        if matches!(ret, Ty::Void | Ty::Err) {
+            writeln!(
+                self.extra_decls.borrow_mut(),
+                "static void {name}({params}) {{\n    (({fn_ty})c->fnptr)(c->env{comma}{args});\n}}",
+                name = sig_name,
+                params = c_params.join(", "),
+                fn_ty = fn_ty,
+                comma = if params.is_empty() { "" } else { ", " },
+                args = arglist,
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                self.extra_decls.borrow_mut(),
+                "static {ret} {name}({params}) {{\n    return (({fn_ty})c->fnptr)(c->env{comma}{args});\n}}",
+                ret = ret_c,
+                name = sig_name,
+                params = c_params.join(", "),
+                fn_ty = fn_ty,
+                comma = if params.is_empty() { "" } else { ", " },
+                args = arglist,
+            )
+            .unwrap();
+        }
+        sig_name
+    }
+
     fn pool_str(&self, s: &str) -> String {
         if let Some(name) = self.pool.get(s) {
             return name.clone();

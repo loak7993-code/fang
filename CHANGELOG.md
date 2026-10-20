@@ -4,6 +4,25 @@ All notable changes to Leo are documented here. The format follows
 [keep a changelog](https://keepachangelog.com/); versions follow
 semantic versioning.
 
+## [0.2.0] - 2026-10-20
+
+### Added
+
+- Function values: `fn(x: int) -> int: return x * 2` expressions with
+  closures (capture by value), named functions as values, and statically
+  typed calls through function values.
+- Higher-order list methods: `map`, `filter`, `reduce`, accepting
+  lambdas or named functions.
+- List comprehensions: `[x * x for x in xs if x > 2]`, over lists, dict
+  keys, and ranges, with optional conditions and two-binder pair
+  destructuring (`for k, v in d.items()`).
+- Tuple assignment: `a, b = b, a` swap and 2-tuple unpacking.
+- Default parameters: `fn greet(name: str, greeting: str = "hello")`,
+  evaluated at the call site.
+- `dict.reserve(n)` for pre-sizing.
+- Conformance suite now runs in `cargo test` (was missing from the
+  workspace).
+
 ## [0.1.0] - 2026-10-19
 
 First public build. The whole pipeline runs: lexer, parser, semantic
