@@ -23,7 +23,7 @@ for (const [w, h, tag] of sizes) {
       const bs = getComputedStyle(document.body);
       out.bg = bs.backgroundColor;
       out.font = bs.fontFamily.slice(0, 24);
-      if (!document.querySelector('.nav') || !document.querySelector('.brand')) out.problems.push('missing nav');
+      if (!document.querySelector('.topbar') || !document.querySelector('.wordmark')) out.problems.push('missing nav');
       if (!document.querySelector('h1') && !document.querySelector('h2')) out.problems.push('no heading');
       // text clipping check: any element overflowing its own box badly
       const clipped = [];
