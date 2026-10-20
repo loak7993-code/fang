@@ -21,7 +21,7 @@ timeit() {
 run_fang() {
   local name="$1"
   local bin="/tmp/fang-bench-$name"
-  "$FANG" build "bench/$name.fang" -o "$bin" --release >/dev/null 2>&1 || { echo "compile-failed"; return; }
+  "$FANG" build "bench/$name.fg" -o "$bin" --release >/dev/null 2>&1 || { echo "compile-failed"; return; }
   timeit "$bin"
 }
 

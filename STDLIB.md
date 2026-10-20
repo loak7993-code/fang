@@ -193,7 +193,7 @@ Use any Python library from Fang. Requires building with `--python`
 (needs the python3 dev package):
 
 ```
-fang run app.fang --python
+fang run app.fg --python
 ```
 
 ```fang
@@ -321,6 +321,6 @@ Key constants: `KEY_NONE, KEY_ESCAPE, KEY_UP, KEY_DOWN, KEY_LEFT,
 KEY_RIGHT, KEY_HOME, KEY_END, KEY_DELETE, KEY_PAGE_UP, KEY_PAGE_DOWN`.
 Colors: `BLACK..WHITE`, `DEFAULT`.
 
-`examples/chip8.fang` is a complete CHIP-8 emulator built on this module:
+`examples/chip8.fg` is a complete CHIP-8 emulator built on this module:
 64x32 display, all 35 opcodes, the original HEX keypad on 1234/qwer/
 asdf/zxcv, and a `--frames N` headless mode for testing.

@@ -6,7 +6,7 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 FANG="${FANG:-$DIR/target/release/fang}"
 [ -x "$FANG" ] || { echo "build fang first"; exit 1; }
 
-progress="$HOME/.fang/learn-progress"
+progress="$HOME/.fg/learn-progress"
 mkdir -p "$(dirname "$progress")"
 echo 0 > "$progress"
 

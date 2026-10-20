@@ -1,4 +1,4 @@
-//! Fixture tests: every .fang file under tests/fixtures must lex cleanly.
+//! Fixture tests: every .fg file under tests/fixtures must lex cleanly.
 
 use fang_core::Lexer;
 
@@ -7,7 +7,7 @@ fn all_fixture_files_lex() {
     let mut checked = 0;
     for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures")).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().is_some_and(|e| e == "fang") {
+        if path.extension().is_some_and(|e| e == "fg") {
             let src = std::fs::read_to_string(&path).unwrap();
             let toks = Lexer::new(&src)
                 .tokenize()

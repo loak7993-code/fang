@@ -22,7 +22,7 @@ for m in re.finditer(r"```(fang|fang-expect-error)\n(.*?)```", src, re.S):
     kind = "err" if m.group(1) == "fang-expect-error" else "run"
     # Blocks that use the Python bridge need --python to link.
     needs_py = "import py" in m.group(2)
-    with open(f"{outdir}/{i:03d}_{kind}{'_py' if needs_py else ''}.fang", "w") as f:
+    with open(f"{outdir}/{i:03d}_{kind}{'_py' if needs_py else ''}.fg", "w") as f:
         prelude = "" if needs_py else "import json\nimport str\nimport math\n"
         f.write(prelude + m.group(2))
 print(i)
@@ -30,8 +30,8 @@ PYEOF
 
 ok=0
 fail=0
-for f in "$tmp"/*.fang; do
-  base=$(basename "$f" .fang)
+for f in "$tmp"/*.fg; do
+  base=$(basename "$f" .fg)
   kind="${base##*_}"
   if [[ "$kind" == "py" ]]; then
     kind="run"

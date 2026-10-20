@@ -1,4 +1,4 @@
-//! End-to-end conformance: every tests/conformance/*.fang runs through the
+//! End-to-end conformance: every tests/conformance/*.fg runs through the
 //! full pipeline and its stdout must match the .expected file exactly.
 
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ fn conformance_suite() {
     let mut failures = Vec::new();
     for entry in std::fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().is_some_and(|e| e == "fang") {
+        if path.extension().is_some_and(|e| e == "fg") {
             let expected_path = path.with_extension("expected");
             let expected = std::fs::read_to_string(&expected_path)
                 .unwrap_or_else(|_| panic!("missing .expected for {:?}", path));

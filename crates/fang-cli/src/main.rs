@@ -13,9 +13,9 @@ USAGE:
     fang <COMMAND> [ARGS]
 
 COMMANDS:
-    run <file.fang> [--release] [--keep-c] [--freestanding] [--python]
+    run <file.fg> [--release] [--keep-c] [--freestanding] [--python]
                           compile and execute a Fang program
-    build <file.fang> [--release] [-o name] [--freestanding] [--target TRIPLE]
+    build <file.fg> [--release] [-o name] [--freestanding] [--target TRIPLE]
                           produce a standalone native binary
     repl                  interactive session (replays the session each input)
     learn                 interactive course, starts you from zero
@@ -23,7 +23,7 @@ COMMANDS:
     cheat                 the whole language on one screen
     doc <topic>           instant help for any word
     fmt <files...>        format source files in the canonical style
-    test [dir]            discover and run *_test.fang files
+    test [dir]            discover and run *_test.fg files
     add <repo>            install a package from a git repository
     version               print the version
     help                  print this help
@@ -58,17 +58,17 @@ fn output_of(prog: &str, args: &[&str]) -> Result<String, String> {
 
 /// Standard library modules, embedded at build time.
 static STD_MODULES: &[(&str, &str)] = &[
-    ("io", include_str!("../../../std/io.fang")),
-    ("str", include_str!("../../../std/str.fang")),
-    ("math", include_str!("../../../std/math.fang")),
-    ("os", include_str!("../../../std/os.fang")),
-    ("fs", include_str!("../../../std/fs.fang")),
-    ("time", include_str!("../../../std/time.fang")),
-    ("json", include_str!("../../../std/json.fang")),
-    ("net", include_str!("../../../std/net.fang")),
-    ("py", include_str!("../../../std/py.fang")),
-    ("server", include_str!("../../../std/server.fang")),
-    ("tui", include_str!("../../../std/tui.fang")),
+    ("io", include_str!("../../../std/io.fg")),
+    ("str", include_str!("../../../std/str.fg")),
+    ("math", include_str!("../../../std/math.fg")),
+    ("os", include_str!("../../../std/os.fg")),
+    ("fs", include_str!("../../../std/fs.fg")),
+    ("time", include_str!("../../../std/time.fg")),
+    ("json", include_str!("../../../std/json.fg")),
+    ("net", include_str!("../../../std/net.fg")),
+    ("py", include_str!("../../../std/py.fg")),
+    ("server", include_str!("../../../std/server.fg")),
+    ("tui", include_str!("../../../std/tui.fg")),
 ];
 
 use std::collections::HashMap;
@@ -168,9 +168,9 @@ fn parse_flags_with_prog_args(args: &[String]) -> Result<(String, BuildFlags, Ve
         }
         i += 1;
     }
-    let file = file.ok_or("pass a .fang file")?;
-    if !file.ends_with(".fang") {
-        return Err(format!("'{}' is not a .fang file", file));
+    let file = file.ok_or("pass a .fg file")?;
+    if !file.ends_with(".fg") {
+        return Err(format!("'{}' is not a .fg file", file));
     }
     Ok((file, flags, prog_args))
 }
@@ -198,7 +198,7 @@ fn cached_rt_object(release: bool) -> Result<PathBuf, String> {
     if obj.exists() {
         return Ok(obj);
     }
-    let tmp = dir.join(format!(".fang_rt-{}.c", key));
+    let tmp = dir.join(format!(".fg_rt-{}.c", key));
     let hdr = dir.join("fang_rt.h");
     std::fs::write(&tmp, RT_C).map_err(|e| format!("cannot write rt source: {}", e))?;
     // RT_H is part of the cache key, so this always matches the .c
@@ -333,10 +333,10 @@ fn compile_program_modular(
     std::fs::write(entry_dir.join("fang_rt.h"), RT_H).map_err(|e| e.to_string())?;
     if flags.keep_c {
         if let Some(dir) = Path::new(&units.last().unwrap().path).parent() {
-            let _ = std::fs::write(dir.join("program.fang.c"), &program.entry_c);
+            let _ = std::fs::write(dir.join("program.fg.c"), &program.entry_c);
             for m in &program.mods {
                 let _ = std::fs::write(
-                    dir.join(format!("program.{}.fang.c", m.module)),
+                    dir.join(format!("program.{}.fg.c", m.module)),
                     &m.c,
                 );
             }
@@ -411,7 +411,7 @@ fn embedded_std_units() -> Vec<SourceUnit> {
                 .ok()
                 .map(|m| SourceUnit {
                     name: name.to_string(),
-                    path: format!("<std>/{}.fang", name),
+                    path: format!("<std>/{}.fg", name),
                     module: m,
                 })
         })
@@ -469,7 +469,7 @@ fn load_imports(
             // 1. embedded std module
             if let Some((_, src)) = STD_MODULES.iter().find(|(n, _)| n == imp) {
                 let m = parse_source(imp, src)?;
-                load_imports(m, imp.clone(), format!("<std>/{}.fang", imp), units, seen, base_dir)?;
+                load_imports(m, imp.clone(), format!("<std>/{}.fg", imp), units, seen, base_dir)?;
                 continue;
             }
             // 2. explicit relative path
@@ -481,22 +481,22 @@ fn load_imports(
                 load_imports(m, imp.clone(), resolved.to_string_lossy().to_string(), units, seen, base_dir)?;
                 continue;
             }
-            // 3. sibling file <name>.fang
-            let sibling = base_dir.parent().unwrap_or(Path::new(".")).join(format!("{}.fang", imp));
+            // 3. sibling file <name>.fg
+            let sibling = base_dir.parent().unwrap_or(Path::new(".")).join(format!("{}.fg", imp));
             // 4. package
             let pkg = base_dir
                 .parent()
                 .unwrap_or(Path::new("."))
                 .join("fang_packages")
                 .join(imp)
-                .join(format!("{}.fang", imp));
+                .join(format!("{}.fg", imp));
             let resolved = if sibling.exists() {
                 sibling
             } else if pkg.exists() {
                 pkg
             } else {
                 return Err(format!(
-                    "unknown module '{}'; not a std module, a local {}.fang, or a package",
+                    "unknown module '{}'; not a std module, a local {}.fg, or a package",
                     imp, imp
                 ));
             };
@@ -619,7 +619,7 @@ fn compile_program(
 
     if flags.keep_c {
         if let Some(dir) = Path::new(&units.last().unwrap().path).parent() {
-            let _ = std::fs::write(dir.join("program.fang.c"), &c_src);
+            let _ = std::fs::write(dir.join("program.fg.c"), &c_src);
         }
     }
 
@@ -762,7 +762,7 @@ fn build_program(file: &str, flags: &BuildFlags) -> Result<PathBuf, String> {
 
 fn cmd_fmt(files: &[String]) -> ExitCode {
     if files.is_empty() {
-        eprintln!("fang fmt: pass at least one .fang file");
+        eprintln!("fang fmt: pass at least one .fg file");
         return ExitCode::from(1);
     }
     let mut failed = false;
@@ -991,7 +991,7 @@ fn drop_last_lines(s: &str, n: usize) -> String {
 }
 
 fn try_run_repl(program: &str, dir: &Path) -> Result<String, String> {
-    let session_path = dir.join("repl.fang");
+    let session_path = dir.join("repl.fg");
     std::fs::write(&session_path, program).map_err(|e| e.to_string())?;
     let m = parse_source("repl", program).map_err(|e| format!("parse: {}", e))?;
     let mut units = embedded_std_units();
@@ -1035,7 +1035,7 @@ fn cmd_test(args: &[String]) -> ExitCode {
     let mut tests = Vec::new();
     collect_tests(std::path::Path::new(&dir), &mut tests);
     if tests.is_empty() {
-        eprintln!("fang test: no *_test.fang files found under {}", dir);
+        eprintln!("fang test: no *_test.fg files found under {}", dir);
         return ExitCode::from(1);
     }
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("fang"));
@@ -1079,7 +1079,7 @@ fn collect_tests(dir: &Path, out: &mut Vec<PathBuf>) {
             } else if p.extension().is_some_and(|x| x == "fang")
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.ends_with("_test.fang"))
+                    .is_some_and(|n| n.ends_with("_test.fg"))
             {
                 out.push(p);
             }
@@ -1135,12 +1135,12 @@ fn cmd_add(args: &[String]) -> ExitCode {
         eprintln!("fang add: clone failed");
         return ExitCode::from(1);
     }
-    // Package shape: <name>.fang at the repo root; no nested dependencies.
-    let entry = pkg_dir.join(format!("{}.fang", name));
+    // Package shape: <name>.fg at the repo root; no nested dependencies.
+    let entry = pkg_dir.join(format!("{}.fg", name));
     if !entry.exists() {
         let _ = std::fs::remove_dir_all(&pkg_dir);
         eprintln!(
-            "fang add: '{}' has no {}.fang at its root; a package repo must contain {}",
+            "fang add: '{}' has no {}.fg at its root; a package repo must contain {}",
             repo, name, name
         );
         return ExitCode::from(1);

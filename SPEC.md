@@ -154,8 +154,8 @@ Two channels:
 
 - One file is one module. Module name is the file stem.
 - `import math` resolves: embedded standard library, then a sibling
-  `math.fang`, then `fang_packages/math/math.fang`.
-- `import utils from "./dir/utils.fang"` loads an explicit path.
+  `math.fg`, then `fang_packages/math/math.fg`.
+- `import utils from "./dir/utils.fg"` loads an explicit path.
 - `export` marks public functions, structs, and constants. Everything
   else is module-private.
 - The standard library modules are always present in a build; their

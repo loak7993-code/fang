@@ -171,7 +171,7 @@ print(double(21))",
     },
     Lesson {
         title: "15. Splitting code into files",
-        teach: "Put functions in their own file and import them. import math uses the standard library; import utils looks for utils.fang next to your program.",
+        teach: "Put functions in their own file and import them. import math uses the standard library; import utils looks for utils.fg next to your program.",
         program: "import math\nprint(math.sqrt(___))",
         expect: "3\n",
         hint: "Fill: 9.0 - sqrt takes a float and 9.0 has root 3",
@@ -225,7 +225,7 @@ and write your own. Try: fang new myproject",
 
 fn progress_file() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    std::path::PathBuf::from(home).join(".fang").join("learn-progress")
+    std::path::PathBuf::from(home).join(".fg").join("learn-progress")
 }
 
 fn load_progress() -> usize {
@@ -304,7 +304,7 @@ pub fn cmd_learn(args: &[String]) -> ExitCode {
             let filled = lesson.program.replacen("___", ans, 1);
             let dir = std::env::temp_dir().join("fang-learn");
             let _ = std::fs::create_dir_all(&dir);
-            let file = dir.join(format!("lesson{}.fang", idx + 1));
+            let file = dir.join(format!("lesson{}.fg", idx + 1));
             if std::fs::write(&file, &filled).is_err() {
                 eprintln!("cannot write the lesson file");
                 return ExitCode::from(1);
@@ -384,11 +384,11 @@ pub fn cmd_new(args: &[String]) -> ExitCode {
         "# {} - your first Fang program\nprint(\"hello from {}\")\n",
         name, name
     );
-    if let Err(e) = std::fs::write(dir.join("main.fang"), main) {
-        eprintln!("fang new: cannot write main.fang: {}", e);
+    if let Err(e) = std::fs::write(dir.join("main.fg"), main) {
+        eprintln!("fang new: cannot write main.fg: {}", e);
         return ExitCode::from(1);
     }
-    println!("created {}/main.fang", name);
-    println!("run it with:  fang run {}/main.fang", name);
+    println!("created {}/main.fg", name);
+    println!("run it with:  fang run {}/main.fg", name);
     ExitCode::SUCCESS
 }

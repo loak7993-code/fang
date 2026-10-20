@@ -35,7 +35,7 @@ float(x) / int(f) / str(x)    convert                 s.to_int()  s.upper()
 
 RUNNING
 =======
-fang run app.fang               compile and run        fang build app.fang --release
+fang run app.fg               compile and run        fang build app.fg --release
 fang learn                     the full course        fang doc <any word above>
 fang repl                      try things live        fang test / fang add <git>
 
@@ -65,7 +65,7 @@ const DOC_ENTRIES: &[(&str, &str)] = &[
     ("reduce", "list.reduce(f, start) folds a list into one value.\n  total = xs.reduce(fn(acc, x): return acc + x, 0)"),
     ("try", "try runs risky code; except e catches a raise.\n  try:\n    raise \"disk full\"\n  except e:\n    print(f\"caught: {e}\")\nUncaught errors exit with code 101."),
     ("raise", "raise \"message\" throws an error; catch it with try/except."),
-    ("import", "import math loads a module; call it as math.sqrt(2.0).\n  import utils                finds utils.fang beside your file\n  import utils from \"./d/u.fang\"\nStandard library: str, math, io, os, fs, time, json, net, py, server, tui."),
+    ("import", "import math loads a module; call it as math.sqrt(2.0).\n  import utils                finds utils.fg beside your file\n  import utils from \"./d/u.fg\"\nStandard library: str, math, io, os, fs, time, json, net, py, server, tui."),
     ("globals", "Top-level let is a mutable global, like Python:\n  let count: list[int] = []\n  fn push_it():\n    count.push(1)\nEvery function in the file sees and can change it."),
     ("bits", "Bitwise operators work on ints: & | ^ << >>\n  mask = 0xF0 | 0x0F\n  low = byte & 15\n  wide = 1 << 8\nHex literals 0xFF and binary 0b1010 are supported."),
     ("server", "HTTP server in pure Fang.\n  import server\n  fn handler(req: Request):\n    if req.path == \"/\":\n      return server.html(\"<h1>hi</h1>\")\n    return server.not_found()\n  server.serve(handler, 8080)\nHandler type: fn(Request) -> Response. Fields: method, path, body.\nBuilders: server.html/json/text/respond/not_found."),
@@ -78,7 +78,7 @@ const DOC_ENTRIES: &[(&str, &str)] = &[
     ("export", "export fn, export struct, export let mark public names for importers."),
     ("repl", "fang repl: type expressions to evaluate them, definitions to keep them."),
     ("learn", "fang learn runs the interactive course from zero. fang learn list shows lessons."),
-    ("test", "fang test runs every *_test.fang file under the current directory."),
+    ("test", "fang test runs every *_test.fg file under the current directory."),
     ("add", "fang add user/repo installs a package from git, pinned in fang.lock."),
 ];
 

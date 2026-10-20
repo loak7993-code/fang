@@ -5,8 +5,8 @@ course in your terminal that starts from zero and checks every answer.
 Then come back here for the full language.
 
 Fang reads like Python and runs as native code. This tutorial covers the
-whole language. Type the examples into a file called `intro.fang` and run
-them with `fang run intro.fang` as you go. You can also paste single lines
+whole language. Type the examples into a file called `intro.fg` and run
+them with `fang run intro.fg` as you go. You can also paste single lines
 into `fang repl` and see them run immediately.
 
 Every example below runs exactly as printed.
@@ -19,7 +19,7 @@ A Fang program is just lines in a file. The smallest program is one line:
 print("hello")
 ```
 
-Run it with `fang run hello.fang`. No function wrappers, no semicolons,
+Run it with `fang run hello.fg`. No function wrappers, no semicolons,
 no imports. Fang has four primitive types: `int`, `float`, `bool`, and
 `str`.
 
@@ -300,7 +300,7 @@ fn main():
 ## 10. Python libraries from Fang
 
 Any Python library, imported and called from Fang. Build with
-`fang run x.fang --python`:
+`fang run x.fg --python`:
 
 ```fang
 import py
@@ -325,7 +325,7 @@ fn main():
 ```
 
 Your own files import by name when they sit next to the entry file:
-`import utils` reads `utils.fang`. Install someone's package from a git
+`import utils` reads `utils.fg`. Install someone's package from a git
 repository:
 
 ```
@@ -334,7 +334,7 @@ fang add github.com/someone/mypkg
 
 That clones into `fang_packages/` and pins the commit in `fang.lock`. Then
 `import mypkg` just works. Publishing a package means pushing a git
-repository with `mypkg.fang` at its root.
+repository with `mypkg.fg` at its root.
 
 ## 12. Talking to C
 
@@ -365,7 +365,7 @@ fn main():
 Build without the runtime, libc, or any dependency:
 
 ```
-fang build kernel.fang --freestanding --target x86_64-elf
+fang build kernel.fg --freestanding --target x86_64-elf
 ```
 
 Freestanding programs use the value types (`int`, `float`, `bool`,

@@ -105,7 +105,7 @@ Or build and use in place:
 
 ```sh
 cargo build --release
-./target/release/fang run examples/hello.fang
+./target/release/fang run examples/hello.fg
 ```
 
 `fang` embeds its runtime and standard library in the binary, so the tool
@@ -114,12 +114,12 @@ itself has no runtime dependencies beyond `cc`.
 ## The tool
 
 ```sh
-fang run app.fang              # compile and execute
-fang build app.fang --release  # standalone native binary (-O2)
-fang build kernel.fang --freestanding --target x86_64-elf  # no runtime, no libc
+fang run app.fg              # compile and execute
+fang build app.fg --release  # standalone native binary (-O2)
+fang build kernel.fg --freestanding --target x86_64-elf  # no runtime, no libc
 fang repl                     # interactive session
-fang fmt src/*.fang            # canonical formatting
-fang test                     # run every *_test.fang under the current directory
+fang fmt src/*.fg            # canonical formatting
+fang test                     # run every *_test.fg under the current directory
 fang add github.com/user/pkg  # install a package, pinned in fang.lock
 ```
 
@@ -167,7 +167,7 @@ server.serve(handler, 8080)
 
 GET and POST both round-trip (verified with curl); the handler is a
 plain function value typed `fn(Request) -> Response`. See
-`examples/website.fang` for a full site with HTML, JSON, and health
+`examples/website.fg` for a full site with HTML, JSON, and health
 routes, and STDLIB.md for the `server` module reference.
 
 Same language, same binary, same performance story: kernels at boot,
@@ -177,12 +177,12 @@ servers on the wire.
 
 Terminal apps are pure Fang: the `tui` module is ANSI escape codes, a
 screen buffer, and raw-mode key input, with zero dependencies. See
-`examples/chip8.fang`, a complete CHIP-8 emulator (all 35 opcodes, the
+`examples/chip8.fg`, a complete CHIP-8 emulator (all 35 opcodes, the
 original HEX keypad, `--frames N` headless testing):
 
 ```sh
-fang run examples/chip8.fang rom.ch8            # play it
-fang run examples/chip8.fang rom.ch8 --frames N # headless run
+fang run examples/chip8.fg rom.ch8            # play it
+fang run examples/chip8.fg rom.ch8 --frames N # headless run
 ```
 
 ## Every operating system
@@ -192,9 +192,9 @@ wherever C goes: Linux, Windows, macOS, the BSDs, Android (via the
 NDK's clang), and iOS. Cross-compile by passing a target triple:
 
 ```sh
-fang build app.fang --target aarch64-linux-gnu     # ARM Linux
-fang build app.fang --target x86_64-w64-mingw32    # Windows .exe
-fang build app.fang --freestanding --target x86_64-elf   # kernels
+fang build app.fg --target aarch64-linux-gnu     # ARM Linux
+fang build app.fg --target x86_64-w64-mingw32    # Windows .exe
+fang build app.fg --freestanding --target x86_64-elf   # kernels
 ```
 
 The browser runs the same C through Emscripten's toolchain. GUI apps
@@ -219,7 +219,7 @@ print(scoreboard)   # [10, 20]
 
 ## Packages
 
-A package is a git repository with `mypkg.fang` at its root. There is no
+A package is a git repository with `mypkg.fg` at its root. There is no
 registry, no account, and no server to run:
 
 ```sh
@@ -236,7 +236,7 @@ on other packages in v0.1.
 ## Python libraries from Fang
 
 ```sh
-fang run app.fang --python
+fang run app.fg --python
 ```
 
 ```fang

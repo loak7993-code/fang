@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.4.1] - 2026-10-20
+
+The file extension is now `.fg` (was `.fang`). Every command,
+example, test, and doc uses the new extension.
+
 ## [1.4.0] - 2026-10-20
 
 Incremental compilation: modules compile once, programs link them.
@@ -57,7 +62,7 @@ module state.
   control, a screen buffer with box/fill/text drawing, and raw-mode
   key input (arrows, page keys, escape disambiguation). No
   dependencies beyond the terminal itself.
-- `examples/chip8.fang`: a complete CHIP-8 emulator built on tui.
+- `examples/chip8.fg`: a complete CHIP-8 emulator built on tui.
   All 35 opcodes, the original HEX keypad, 64x32 display, sound and
   delay timers, `--frames N` headless mode for deterministic tests.
 - Module-level `let` creates a mutable global, exactly like Python:
@@ -66,7 +71,7 @@ module state.
   expression" error is gone.
 - Bitwise operators `& | ^ << >>` with C precedence, plus `0xFF` hex
   and `0b1010` binary integer literals.
-- `fang run file.fang -- args` forwards everything after `--` to the
+- `fang run file.fg -- args` forwards everything after `--` to the
   program as `os.args()`.
 - Structs can hold list and dict fields; collection types are
   forward-declared before struct definitions (was a documented
@@ -103,7 +108,7 @@ Build anything, from backend websites to kernels.
 - Structs from imported modules resolve in annotations and
   constructors: `import server` puts `Request` and `Response` in
   scope by name.
-- `examples/website.fang`: a complete website with HTML, JSON, and
+- `examples/website.fg`: a complete website with HTML, JSON, and
   health routes.
 
 ## [1.1.0] - 2026-10-20
@@ -128,7 +133,7 @@ Type less words.
 ## [1.0.0] - 2026-10-20
 
 Renamed to Fang (previously Leo, briefly Volt). The whole repository:
-binary, file extension (.fang), runtime symbols (fang_*), crate names
+binary, file extension (.fg), runtime symbols (fang_*), crate names
 (fang-core, fang-cli), docs, course, cheat sheet, and examples.
 Everything else unchanged: 68 tests, 27/27 doc examples, 18/18
 interactive course checks, clippy clean.
@@ -231,7 +236,7 @@ Simpler than Python for getting started.
 
 ### Added
 
-- Python bridge: `fang run app.fang --python` embeds CPython (via
+- Python bridge: `fang run app.fg --python` embeds CPython (via
   `python3-config --embed`) and the `py` stdlib module imports any
   Python library, calls functions and methods, evaluates Python source,
   and converts values in both directions. Third-party packages work:
