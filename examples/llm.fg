@@ -18,6 +18,28 @@ extern fn fang_llm_quant_q8(x: list[float], n: int) -> list[int] from "fang_rt.h
 
 extern fn fang_llm_dot_q8(t: int, blob: str, off: int, qx: list[int], n: int) -> float from "fang_rt.h"
 
+extern fn fang_llm_matvec(t: int, blob: str, off: int, rows: int, x: list[float], out: list[float], n: int, bias: list[float], threads: int) from "fang_rt.h"
+
+extern fn fang_llm_matvec0(t: int, blob: str, off: int, rows: int, x: list[float], out: list[float], n: int, threads: int) from "fang_rt.h"
+
+extern fn fang_llm_rms_norm(x: list[float], w: list[float], out: list[float], n: int, eps: float) from "fang_rt.h"
+
+extern fn fang_llm_rope(x: list[float], pos: int, heads: int, head_dim: int, freq_base: float) from "fang_rt.h"
+
+extern fn fang_llm_kv_append(kcache: list[float], vcache: list[float], k: list[float], v: list[float], pos: int, kv_dim: int) from "fang_rt.h"
+
+extern fn fang_llm_attention(q: list[float], kcache: list[float], vcache: list[float], pos: int, n_heads: int, n_kv_heads: int, head_dim: int, out: list[float]) from "fang_rt.h"
+
+extern fn fang_llm_silu_mul(gate: list[float], up: list[float], out: list[float], n: int) from "fang_rt.h"
+
+extern fn fang_llm_add(a: list[float], b: list[float], out: list[float], n: int) from "fang_rt.h"
+
+extern fn fang_llm_argmax(logits: list[float], n: int) -> int from "fang_rt.h"
+
+extern fn fang_llm_dequant_row(t: int, blob: str, off: int, out: list[float], n: int) from "fang_rt.h"
+
+let threads = 8
+
 extern fn fang_print_raw(s: str) from "fang_rt.h"
 
 extern fn fang_utf8_from_bytes(bytes: list[int]) -> str from "fang_rt.h"
@@ -371,13 +393,10 @@ fn make_cache(m: Model, ctx: int) -> Cache:
   Cache(k_layers, v_layers)
 
 fn rms_norm(x: list[float], w: list[float], eps: float) -> list[float]:
-  s = 0.0
-  for i in 0..len(x):
-    s = s + x[i] * x[i]
-  inv = 1.0 / math.sqrt(s / len(x) + eps)
   out: list[float] = []
   for i in 0..len(x):
-    out.push(w[i] * x[i] * inv)
+    out.push(0.0)
+  fang_llm_rms_norm(x, w, out, len(x), eps)
   out
 
 fn load_f32_row(m: Model, name: str, row: int) -> list[float]:
@@ -421,20 +440,22 @@ fn load_f32_row(m: Model, name: str, row: int) -> list[float]:
 fn matvec(m: Model, name: str, x: list[float], rows: int) -> list[float]:
   t = m.tensor_type[name]
   row_n = m.tensor_row[name]
-  rb = fang_llm_row_bytes(t, row_n)
   base = m.tensor_off[name]
-  # Quantize the activation once, then integer-dot every row.
-  qx = fang_llm_quant_q8(x, row_n)
   out: list[float] = []
   for r in 0..rows:
-    out.push(fang_llm_dot_q8(t, m.blob, base + r * rb, qx, row_n))
+    out.push(0.0)
+  fang_llm_matvec0(t, m.blob, base, rows, x, out, row_n, threads)
   out
 
 fn matvec_bias(m: Model, wname: str, bname: str, x: list[float], rows: int) -> list[float]:
-  out = matvec(m, wname, x, rows)
+  t = m.tensor_type[wname]
+  row_n = m.tensor_row[wname]
+  base = m.tensor_off[wname]
   bias = load_f32_row(m, bname, 0)
-  for i in 0..rows:
-    out[i] = out[i] + bias[i]
+  out: list[float] = []
+  for r in 0..rows:
+    out.push(0.0)
+  fang_llm_matvec(t, m.blob, base, rows, x, out, row_n, bias, threads)
   out
 
 fn softmax_inplace(x: list[float]):
@@ -466,7 +487,61 @@ fn apply_rope(x: list[float], base_off: int, dim: int, pos: int):
     x[base_off + i] = x1 * c - x2 * s
     x[base_off + half + i] = x2 * c + x1 * s
 
-fn forward(m: Model, cache: Cache, token: int, pos: int) -> list[float]:
+struct Weights:
+  norms: list[list[float]]
+  biases: list[list[float]]
+  final_norm: list[float]
+
+struct Bufs:
+  h: list[float]
+  xn: list[float]
+  xn2: list[float]
+  q: list[float]
+  k: list[float]
+  v: list[float]
+  attn_out: list[float]
+  gate: list[float]
+  up: list[float]
+  act: list[float]
+  final: list[float]
+  logits: list[float]
+
+fn zeros(n: int) -> list[float]:
+  out: list[float] = []
+  for i in 0..n:
+    out.push(0.0)
+  out
+
+fn load_weights(m: Model) -> Weights:
+  norms: list[list[float]] = []
+  biases: list[list[float]] = []
+  for layer in 0..m.n_layers:
+    p = "blk." + str(layer) + "."
+    norms.push(load_f32_row(m, p + "attn_norm.weight", 0))
+    norms.push(load_f32_row(m, p + "ffn_norm.weight", 0))
+    biases.push(load_f32_row(m, p + "attn_q.bias", 0))
+    biases.push(load_f32_row(m, p + "attn_k.bias", 0))
+    biases.push(load_f32_row(m, p + "attn_v.bias", 0))
+  Weights(norms, biases, load_f32_row(m, "output_norm.weight", 0))
+
+fn make_bufs(m: Model) -> Bufs:
+  kv_dim = m.n_kv_heads * m.head_dim
+  Bufs(zeros(m.hidden), zeros(m.hidden), zeros(m.hidden), zeros(kv_dim), zeros(kv_dim), zeros(m.hidden), zeros(m.hidden), zeros(m.ffn), zeros(m.ffn), zeros(m.ffn), zeros(m.hidden), zeros(m.vocab))
+  # Matvec into a caller-provided buffer (no allocation).
+
+fn matvec_to(m: Model, name: str, x: list[float], out: list[float], rows: int):
+  t = m.tensor_type[name]
+  row_n = m.tensor_row[name]
+  base = m.tensor_off[name]
+  fang_llm_matvec0(t, m.blob, base, rows, x, out, row_n, threads)
+
+fn matvec_bias_to(m: Model, name: str, bias: list[float], x: list[float], out: list[float], rows: int):
+  t = m.tensor_type[name]
+  row_n = m.tensor_row[name]
+  base = m.tensor_off[name]
+  fang_llm_matvec(t, m.blob, base, rows, x, out, row_n, bias, threads)
+
+fn forward(m: Model, cache: Cache, w: Weights, b: Bufs, token: int, pos: int):
   h = load_f32_row(m, "token_embd.weight", token)
   kv_dim = m.n_kv_heads * m.head_dim
   q_span = m.n_heads / m.n_kv_heads
@@ -590,17 +665,19 @@ fn main():
   t_load = time.now()
   m = load_model(model_path)
   print("loaded", model_path, "in", time.now() - t_load, "s: layers", m.n_layers, "hidden", m.hidden, "vocab", m.vocab)
-  cache = make_cache(m, 512)
+  cache = make_cache(m, 2048)
   init_char_cache()
   init_rope(m)
   chat = "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n"
   ids = bpe_encode(m, chat)
   print("prompt:", len(ids), "tokens")
+  w = load_weights(m)
+  bufs = make_bufs(m)
   t0 = time.now()
   logits: list[float] = []
   pos = 0
   for tok in ids:
-    logits = forward(m, cache, tok, pos)
+    logits = forward(m, cache, w, bufs, tok, pos)
     pos = pos + 1
   last = sample_greedy(logits)
   gen = 0
@@ -608,7 +685,7 @@ fn main():
     if last == m.eos:
       break
     fang_print_raw(unmap(m.vocab_str[last]))
-    logits = forward(m, cache, last, pos)
+    logits = forward(m, cache, w, bufs, last, pos)
     pos = pos + 1
     if temp > 0.0:
       last = sample_temp(logits, temp)

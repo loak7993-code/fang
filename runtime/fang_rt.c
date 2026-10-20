@@ -1149,6 +1149,505 @@ int64_t fang_llm_row_bytes(int64_t ggml_type, int64_t n) {
     }
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Fused inference kernels: the whole matvec, attention, rope, norms  */
+/* and sampling run in C. Fang orchestrates per layer.               */
+/* ------------------------------------------------------------------ */
+
+#include <pthread.h>
+#include <sched.h>
+
+
+/* ---- AVX2 helpers (llama.cpp technique) ---- */
+static inline float fang_hsum_float_8(const __m256 x) {
+    __m128 res = _mm256_extractf128_ps(x, 1);
+    res = _mm_add_ps(res, _mm256_castps256_ps128(x));
+    res = _mm_add_ps(res, _mm_movehl_ps(res, res));
+    res = _mm_add_ss(res, _mm_movehdup_ps(res));
+    return _mm_cvtss_f32(res);
+}
+
+/* spread 32 bits to 32 bytes { 0x00, 0xFF } */
+static inline __m256i fang_bytes_from_bits_32(const uint8_t* x) {
+    uint32_t x32;
+    memcpy(&x32, x, sizeof(uint32_t));
+    const __m256i shuf_mask = _mm256_set_epi64x(
+            0x0303030303030303, 0x0202020202020202,
+            0x0101010101010101, 0x0000000000000000);
+    __m256i bytes = _mm256_shuffle_epi8(_mm256_set1_epi32(x32), shuf_mask);
+    const __m256i bit_mask = _mm256_set1_epi64x(0x7fbfdfeff7fbfdfe);
+    bytes = _mm256_or_si256(bytes, bit_mask);
+    return _mm256_cmpeq_epi8(bytes, _mm256_set1_epi64x(-1));
+}
+
+/* unpack 32 4-bit fields into 32 bytes, each in [0, 15] */
+static inline __m256i fang_bytes_from_nibbles_32(const uint8_t* rsi) {
+    const __m128i tmp = _mm_loadu_si128((const __m128i*)rsi);
+    const __m256i bytes = _mm256_insertf128_si256(_mm256_castsi128_si256(tmp), _mm_srli_epi16(tmp, 4), 1);
+    const __m256i low_mask = _mm256_set1_epi8(0xF);
+    return _mm256_and_si256(low_mask, bytes);
+}
+
+static inline __m256 fang_sum_i16_pairs_float(const __m256i x) {
+    const __m256i ones = _mm256_set1_epi16(1);
+    const __m256i summed_pairs = _mm256_madd_epi16(ones, x);
+    return _mm256_cvtepi32_ps(summed_pairs);
+}
+
+static inline __m256 fang_mul_sum_us8_pairs_float(const __m256i ax, const __m256i sy) {
+    const __m256i dot = _mm256_maddubs_epi16(ax, sy);
+    return fang_sum_i16_pairs_float(dot);
+}
+
+static inline __m256 fang_mul_sum_i8_pairs_float(const __m256i x, const __m256i y) {
+    const __m256i ax = _mm256_sign_epi8(x, x);
+    const __m256i sy = _mm256_sign_epi8(y, x);
+    return fang_mul_sum_us8_pairs_float(ax, sy);
+}
+
+#if defined(__AVX2__)
+/* Q5_0 weights x Q8_0 activation: full AVX2 path. */
+static double fang_q5_0_row_avx2(const uint8_t* base, const int8_t* q8, const float* qd, int64_t nb) {
+    __m256 acc = _mm256_setzero_ps();
+    for (int64_t b = 0; b < nb; b++) {
+        const uint8_t* w = base + b * 22;
+        float dw = fang_fp16_to_fp32((uint16_t)(w[0] | (w[1] << 8)));
+        const __m256 d = _mm256_set1_ps(dw * qd[b]);
+        __m256i qx = fang_bytes_from_nibbles_32(w + 6);
+        __m256i bxhi = fang_bytes_from_bits_32(w + 2);
+        bxhi = _mm256_andnot_si256(bxhi, _mm256_set1_epi8((char)0xF0));
+        qx = _mm256_or_si256(qx, bxhi);
+        const __m256i qy = _mm256_loadu_si256((const __m256i*)(q8 + b * 32));
+        const __m256 q = fang_mul_sum_i8_pairs_float(qx, qy);
+        acc = _mm256_fmadd_ps(d, q, acc);
+    }
+    return (double)fang_hsum_float_8(acc);
+}
+#else
+#define fang_q5_0_row_avx2(base, q8, qd, nb) (0.0)
+#endif
+
+typedef struct {
+    int64_t t;
+    const uint8_t* base;
+    int64_t row0, row1;      /* [row0, row1) rows of this chunk */
+    int64_t n;              /* elements per row */
+    int64_t rb;              /* bytes per row */
+    const int8_t* q8;        /* compact quantized activation */
+    const float* qd;         /* per-32-block activation scales */
+    double* out;
+    const double* bias;      /* nullable */
+} fang_matvec_job;
+
+/* Integer dot of one quantized weight row against the compact q8
+   activation. q8/qd are the pre-quantized activation. */
+static double fang_row_dot_q8(int64_t t, const uint8_t* base, const int8_t* q8, const float* qd, int64_t n) {
+    const int64_t nb = n / 32;
+    double sumf = 0.0;
+    if (t == 8) {
+        for (int64_t b = 0; b < nb; b++) {
+            const uint8_t* w = base + b * 34;
+            float dw = fang_fp16_to_fp32((uint16_t)(w[0] | (w[1] << 8)));
+            sumf += (double)dw * qd[b] * fang_dot_i8x32((const int8_t*)(w + 2), q8 + b * 32);
+        }
+        return sumf;
+    }
+    if (t == 6) {
+#if defined(__AVX2__)
+        return fang_q5_0_row_avx2(base, q8, qd, nb);
+#else
+        for (int64_t b = 0; b < nb; b++) {
+            const uint8_t* w = base + b * 22;
+            float dw = fang_fp16_to_fp32((uint16_t)(w[0] | (w[1] << 8)));
+            uint32_t qh = (uint32_t)(w[2] | (w[3] << 8) | ((uint32_t)w[4] << 16) | ((uint32_t)w[5] << 24));
+            const int8_t* y = q8 + b * 32;
+            int sumi = 0;
+            for (int j = 0; j < 16; j++) {
+                uint8_t xh0 = (uint8_t)(((qh >> (j + 0)) << 4) & 0x10);
+                uint8_t xh1 = (uint8_t)((qh >> (j + 12)) & 0x10);
+                int x0 = ((w[6 + j] & 0x0F) | xh0) - 16;
+                int x1 = ((w[6 + j] >> 4) | xh1) - 16;
+                sumi += x0 * y[j];
+                sumi += x1 * y[j + 16];
+            }
+            sumf += (double)dw * qd[b] * sumi;
+        }
+        return sumf;
+#endif
+    }
+    if (t == 0) {
+        for (int64_t b = 0; b < nb; b++) {
+            const uint8_t* w = base + b * 128;
+            double bd = 0.0;
+            for (int j = 0; j < 32; j++) {
+                uint32_t bits = (uint32_t)w[j*4] | ((uint32_t)w[j*4+1] << 8) | ((uint32_t)w[j*4+2] << 16) | ((uint32_t)w[j*4+3] << 24);
+                float fv;
+                memcpy(&fv, &bits, 4);
+                bd += (double)fv * q8[b * 32 + j];
+            }
+            sumf += bd * qd[b];
+        }
+        return sumf;
+    }
+    /* Q6_K / Q4_K: dequantize blocks to float then dot. */
+    if (t == 14 || t == 12) {
+        float wf[256];
+        for (int64_t b = 0; b < n / 256; b++) {
+            double dw;
+            if (t == 14) {
+                const uint8_t* blk = base + b * 210;
+                dw = fang_fp16_to_fp32((uint16_t)(blk[208] | (blk[209] << 8)));
+                const uint8_t* ql = blk;
+                const uint8_t* qh = blk + 128;
+                const int8_t* sc = (const int8_t*)(blk + 192);
+                for (int half = 0; half < 2; half++) {
+                    const uint8_t* qlh = ql + half * 64;
+                    const uint8_t* qhh = qh + half * 32;
+                    const int8_t* sch = sc + half * 8;
+                    for (int l = 0; l < 32; l++) {
+                        int isc = l / 16;
+                        int q1 = ((qlh[l] & 0xF) | (((qhh[l] >> 0) & 3) << 4)) - 32;
+                        int q2 = ((qlh[l + 32] & 0xF) | (((qhh[l] >> 2) & 3) << 4)) - 32;
+                        int q3 = ((qlh[l] >> 4) | (((qhh[l] >> 4) & 3) << 4)) - 32;
+                        int q4 = ((qlh[l + 32] >> 4) | (((qhh[l] >> 6) & 3) << 4)) - 32;
+                        wf[half * 128 + l]       = (float)(q1 * sch[isc + 0]);
+                        wf[half * 128 + l + 32]   = (float)(q2 * sch[isc + 2]);
+                        wf[half * 128 + l + 64]   = (float)(q3 * sch[isc + 4]);
+                        wf[half * 128 + l + 96]   = (float)(q4 * sch[isc + 6]);
+                    }
+                }
+            } else {
+                const uint8_t* blk = base + b * 144;
+                float d = fang_fp16_to_fp32((uint16_t)(blk[0] | (blk[1] << 8)));
+                float dmin = fang_fp16_to_fp32((uint16_t)(blk[2] | (blk[3] << 8)));
+                const uint8_t* scales = blk + 4;
+                const uint8_t* q = blk + 16;
+                int is = 0;
+                for (int j = 0; j < 256; j += 64) {
+                    uint8_t sc, m;
+                    fang_get_scale_min_k4(is + 0, scales, &sc, &m);
+                    float d1 = d * sc, m1 = dmin * m;
+                    fang_get_scale_min_k4(is + 1, scales, &sc, &m);
+                    float d2 = d * sc, m2 = dmin * m;
+                    for (int l = 0; l < 32; l++) {
+                        wf[j + l] = d1 * (q[l] & 0xF) - m1;
+                        wf[j + 32 + l] = d2 * (q[l] >> 4) - m2;
+                    }
+                    q += 32; is += 2;
+                }
+                dw = 1.0;
+            }
+            for (int g = 0; g < 8; g++) {
+                double acc = 0.0;
+                for (int j = 0; j < 32; j++) acc += (double)wf[g * 32 + j] * q8[(b * 8 + g) * 32 + j];
+                sumf += dw * qd[b * 8 + g] * acc;
+            }
+        }
+        return sumf;
+    }
+    return 0.0;
+}
+
+static void* fang_matvec_worker(void* arg) {
+    fang_matvec_job* j = (fang_matvec_job*)arg;
+    for (int64_t r = j->row0; r < j->row1; r++) {
+        double v = fang_row_dot_q8(j->t, j->base + r * j->rb, j->q8, j->qd, j->n);
+        if (j->bias) v += j->bias[r];
+        j->out[r] = v;
+    }
+    return NULL;
+}
+
+/* Persistent matvec pool: workers spawn once and wait for jobs. */
+#define FANG_POOL_MAX 32
+typedef struct {
+    pthread_t th;
+    int idx;
+    int last_gen;
+} fang_pool_slot;
+static fang_pool_slot fang_pool[FANG_POOL_MAX];
+static int fang_pool_n = 0;
+static fang_matvec_job* fang_pool_jobs[FANG_POOL_MAX];
+static volatile int64_t fang_pool_gen = 0;
+static volatile int fang_pool_ready = 0;
+static volatile int fang_pool_quit = 0;
+static volatile int64_t fang_pool_done = 0; /* total completions, never reset */
+static pthread_mutex_t fang_pool_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t fang_pool_cv = PTHREAD_COND_INITIALIZER;
+
+static void* fang_pool_worker(void* arg) {
+    fang_pool_slot* self = (fang_pool_slot*)arg;
+    int64_t seen = 0;
+    for (;;) {
+        pthread_mutex_lock(&fang_pool_mu);
+        while (fang_pool_gen == seen && !fang_pool_quit) {
+            pthread_cond_wait(&fang_pool_cv, &fang_pool_mu);
+        }
+        if (fang_pool_quit) { pthread_mutex_unlock(&fang_pool_mu); return NULL; }
+        seen = fang_pool_gen;
+        fang_matvec_job* j = fang_pool_jobs[self->idx];
+        pthread_mutex_unlock(&fang_pool_mu);
+        if (j) fang_matvec_worker(j);
+        __sync_fetch_and_add(&fang_pool_done, 1);
+    }
+}
+
+static void fang_pool_launch(int nthreads, fang_matvec_job* main_job,
+                             fang_matvec_job** jobs, int njobs) {
+    if (fang_pool_n == 0) {
+        pthread_mutex_lock(&fang_pool_mu);
+        if (fang_pool_n == 0) {
+            for (int i = 0; i < FANG_POOL_MAX; i++) fang_pool[i].idx = i;
+            /* one chunk runs on the calling thread: workers = cores - 1 */
+            long nproc = sysconf(_SC_NPROCESSORS_ONLN);
+            if (nproc < 1) nproc = 1;
+            int want = (int)(nproc - 1);
+            if (want > FANG_POOL_MAX) want = FANG_POOL_MAX;
+            if (want < 1) want = 1;
+            for (int i = 0; i < want; i++) {
+                if (pthread_create(&fang_pool[i].th, NULL, fang_pool_worker, &fang_pool[i]) == 0) {
+                    fang_pool_n++;
+                }
+            }
+        }
+        pthread_mutex_unlock(&fang_pool_mu);
+    }
+    /* extra jobs beyond the pool run inline on the caller side */
+    (void)nthreads;
+    __sync_synchronize();
+    pthread_mutex_lock(&fang_pool_mu);
+    for (int i = 0; i < fang_pool_n; i++) {
+        fang_pool_jobs[i] = (i < njobs) ? jobs[i] : NULL;
+    }
+    const int64_t before = fang_pool_done;
+    fang_pool_gen++;
+    pthread_cond_broadcast(&fang_pool_cv);
+    pthread_mutex_unlock(&fang_pool_mu);
+    fang_matvec_worker(main_job);
+    /* epoch barrier: wait for pool_n completions beyond `before` */
+    while (fang_pool_done - before < fang_pool_n) {
+#if defined(__x86_64__) || defined(__i386__)
+        __builtin_ia32_pause();
+#endif
+    }
+}
+
+/* Fused matvec: quantize x in C (compact, per-32-block scales), dot
+   every row, optional bias, multithreaded over rows. out is a
+   list[float] of length rows. threads <= 1 runs single-threaded. */
+void fang_llm_matvec(int64_t t, fang_str* blob, int64_t base_off, int64_t rows,
+                     void* x_, void* out_, int64_t n, void* bias_, int64_t threads) {
+    const uint8_t* base = (const uint8_t*)blob->bytes + base_off;
+    const double* x = ((const fang_f64_list_view*)x_)->elems;
+    double* out = ((fang_f64_list_view*)out_)->elems;
+    const double* bias = bias_ ? ((const fang_f64_list_view*)bias_)->elems : NULL;
+    const int64_t nb = n / 32;
+
+    /* quantize the activation compactly */
+    int8_t* q8 = (int8_t*)malloc((size_t)n);
+    float* qd = (float*)malloc((size_t)nb * sizeof(float));
+    if (!q8 || !qd) fang_panic("out of memory", "<runtime>", 0);
+    for (int64_t b = 0; b < nb; b++) {
+        const double* xb = x + b * 32;
+        double amax = 0.0;
+        for (int j = 0; j < 32; j++) {
+            double a = xb[j] < 0 ? -xb[j] : xb[j];
+            if (a > amax) amax = a;
+        }
+        double d = amax / 127.0;
+        if (d == 0.0) d = 1.0;
+        double id = 1.0 / d;
+        qd[b] = (float)d;
+        for (int j = 0; j < 32; j++) {
+            int q = (int)(xb[j] * id + (xb[j] < 0 ? -0.5 : 0.5));
+            if (q > 127) q = 127;
+            if (q < -127) q = -127;
+            q8[b * 32 + j] = (int8_t)q;
+        }
+    }
+
+    int64_t rb;
+    switch (t) {
+        case 6: rb = n / 32 * 22; break;
+        case 8: rb = n / 32 * 34; break;
+        case 12: rb = n / 256 * 144; break;
+        case 14: rb = n / 256 * 210; break;
+        default: rb = n * 4; break;
+    }
+
+    if (threads <= 1 || rows < 512) {
+        fang_matvec_job j = {t, base, 0, rows, n, rb, q8, qd, out, bias};
+        fang_matvec_worker(&j);
+    } else {
+        int64_t nt = threads;
+        if (nt > rows / 64 + 1) nt = rows / 64 + 1;
+        fang_matvec_job jobs[FANG_POOL_MAX];
+        int64_t per = (rows + nt - 1) / nt;
+        int njobs = 0;
+        for (int64_t i = 0; i < nt; i++) {
+            int64_t r0 = i * per;
+            if (r0 >= rows) break;
+            int64_t r1 = r0 + per < rows ? r0 + per : rows;
+            jobs[i] = (fang_matvec_job){t, base, r0, r1, n, rb, q8, qd, out, bias};
+            njobs++;
+        }
+        fang_matvec_job* jobptrs[FANG_POOL_MAX];
+        for (int i = 0; i < njobs; i++) jobptrs[i] = &jobs[i];
+        /* the calling thread runs the LAST chunk; workers get the rest */
+        fang_matvec_job* mainjob = jobptrs[njobs - 1];
+        int workerjobs = njobs - 1;
+        if (workerjobs > fang_pool_n && fang_pool_n > 0) workerjobs = fang_pool_n;
+        fang_pool_launch((int)threads, mainjob, jobptrs, workerjobs);
+        /* any jobs the pool did not take run inline, in order */
+        for (int i = fang_pool_n; i < njobs - 1; i++) {
+            fang_matvec_worker(jobptrs[i]);
+        }
+    }
+    free(q8);
+    free(qd);
+}
+
+/* No-bias variant of the fused matvec. */
+void fang_llm_matvec0(int64_t t, fang_str* blob, int64_t base_off, int64_t rows,
+                      void* x_, void* out_, int64_t n, int64_t threads) {
+    fang_llm_matvec(t, blob, base_off, rows, x_, out_, n, NULL, threads);
+}
+
+/* RMS norm: out = w * x / rms(x). */
+void fang_llm_rms_norm(void* x_, void* w_, void* out_, int64_t n, double eps) {
+    const double* x = ((const fang_f64_list_view*)x_)->elems;
+    const double* w = ((const fang_f64_list_view*)w_)->elems;
+    double* out = ((fang_f64_list_view*)out_)->elems;
+    double s = 0.0;
+    for (int64_t i = 0; i < n; i++) s += x[i] * x[i];
+    double inv = 1.0 / sqrt(s / (double)n + eps);
+    for (int64_t i = 0; i < n; i++) out[i] = w[i] * x[i] * inv;
+}
+
+/* Split-half RoPE over the first heads*head_dim elements. */
+void fang_llm_rope(void* x_, int64_t pos, int64_t heads, int64_t head_dim, double freq_base) {
+    double* x = ((fang_f64_list_view*)x_)->elems;
+    int64_t half = head_dim / 2;
+    for (int64_t h = 0; h < heads; h++) {
+        double* xo = x + h * head_dim;
+        for (int64_t i = 0; i < half; i++) {
+            double freq = pow(freq_base, -2.0 * (double)i / (double)head_dim);
+            double ang = (double)pos * freq;
+            double c = cos(ang), sn = sin(ang);
+            double x1 = xo[i], x2 = xo[half + i];
+            xo[i] = x1 * c - x2 * sn;
+            xo[half + i] = x2 * c + x1 * sn;
+        }
+    }
+}
+
+/* Append k/v into the layer caches at position pos. */
+void fang_llm_kv_append(void* kcache_, void* vcache_, void* k_, void* v_, int64_t pos, int64_t kv_dim) {
+    memcpy(((fang_f64_list_view*)kcache_)->elems + pos * kv_dim, ((const fang_f64_list_view*)k_)->elems, sizeof(double) * kv_dim);
+    memcpy(((fang_f64_list_view*)vcache_)->elems + pos * kv_dim, ((const fang_f64_list_view*)v_)->elems, sizeof(double) * kv_dim);
+}
+
+/* GQA causal attention: q (heads*hd), k/v caches (pos+1 slots of
+   kv_dim), writes heads*hd into out. */
+void fang_llm_attention(void* q_, void* kcache_, void* vcache_, int64_t pos,
+                        int64_t n_heads, int64_t n_kv_heads, int64_t head_dim,
+                        void* out_) {
+    const double* q = ((const fang_f64_list_view*)q_)->elems;
+    const double* kc = ((const fang_f64_list_view*)kcache_)->elems;
+    const double* vc = ((const fang_f64_list_view*)vcache_)->elems;
+    double* out = ((fang_f64_list_view*)out_)->elems;
+    int64_t kv_dim = n_kv_heads * head_dim;
+    int64_t span = n_heads / n_kv_heads;
+    double scale = 1.0 / sqrt((double)head_dim);
+    double* scores = (double*)malloc(sizeof(double) * (size_t)(pos + 1));
+    if (!scores) fang_panic("out of memory", "<runtime>", 0);
+    for (int64_t h = 0; h < n_heads; h++) {
+        int64_t kvh = h / span;
+        const double* qh = q + h * head_dim;
+        for (int64_t t = 0; t <= pos; t++) {
+            const double* kt = kc + t * kv_dim + kvh * head_dim;
+            double sk = 0.0;
+            for (int64_t i = 0; i < head_dim; i++) sk += qh[i] * kt[i];
+            scores[t] = sk * scale;
+        }
+        double mx = scores[0];
+        for (int64_t t = 1; t <= pos; t++) if (scores[t] > mx) mx = scores[t];
+        double sum = 0.0;
+        for (int64_t t = 0; t <= pos; t++) { scores[t] = exp(scores[t] - mx); sum += scores[t]; }
+        double inv = 1.0 / sum;
+        double* oh = out + h * head_dim;
+        for (int64_t i = 0; i < head_dim; i++) oh[i] = 0.0;
+        for (int64_t t = 0; t <= pos; t++) {
+            double p = scores[t] * inv;
+            const double* vt = vc + t * kv_dim + kvh * head_dim;
+            for (int64_t i = 0; i < head_dim; i++) oh[i] += p * vt[i];
+        }
+    }
+    free(scores);
+}
+
+/* SwiGLU: out = silu(gate) * up. */
+void fang_llm_silu_mul(void* gate_, void* up_, void* out_, int64_t n) {
+    const double* gate = ((const fang_f64_list_view*)gate_)->elems;
+    const double* up = ((const fang_f64_list_view*)up_)->elems;
+    double* out = ((fang_f64_list_view*)out_)->elems;
+    for (int64_t i = 0; i < n; i++) {
+        double g = gate[i];
+        out[i] = g / (1.0 + exp(-g)) * up[i];
+    }
+}
+
+/* out[i] = a[i] + b[i]. */
+void fang_llm_add(void* a_, void* b_, void* out_, int64_t n) {
+    const double* a = ((const fang_f64_list_view*)a_)->elems;
+    const double* b = ((const fang_f64_list_view*)b_)->elems;
+    double* out = ((fang_f64_list_view*)out_)->elems;
+    for (int64_t i = 0; i < n; i++) out[i] = a[i] + b[i];
+}
+
+/* Argmax over logits. */
+int64_t fang_llm_argmax(void* logits_, int64_t n) {
+    const double* l = ((const fang_f64_list_view*)logits_)->elems;
+    int64_t best = 0;
+    double bv = l[0];
+    for (int64_t i = 1; i < n; i++) {
+        if (l[i] > bv) { bv = l[i]; best = i; }
+    }
+    return best;
+}
+
+/* Dequantize a row into out (list[float]). */
+void fang_llm_dequant_row(int64_t t, fang_str* blob, int64_t off, void* out_, int64_t n) {
+    const uint8_t* base = (const uint8_t*)blob->bytes + off;
+    double* out = ((fang_f64_list_view*)out_)->elems;
+    if (t == 0) {
+        for (int64_t i = 0; i < n; i++) {
+            uint32_t bits = (uint32_t)base[i*4] | ((uint32_t)base[i*4+1] << 8) | ((uint32_t)base[i*4+2] << 16) | ((uint32_t)base[i*4+3] << 24);
+            float fv;
+            memcpy(&fv, &bits, 4);
+            out[i] = (double)fv;
+        }
+        return;
+    }
+    if (t == 6) {
+        for (int64_t b = 0; b < n / 32; b++) {
+            const uint8_t* w = base + b * 22;
+            float d = fang_fp16_to_fp32((uint16_t)(w[0] | (w[1] << 8)));
+            uint32_t qh = (uint32_t)(w[2] | (w[3] << 8) | ((uint32_t)w[4] << 16) | ((uint32_t)w[5] << 24));
+            for (int j = 0; j < 16; j++) {
+                uint8_t xh0 = (uint8_t)(((qh >> (j + 0)) << 4) & 0x10);
+                uint8_t xh1 = (uint8_t)((qh >> (j + 12)) & 0x10);
+                out[b * 32 + j] = ((w[6 + j] & 0x0F) | xh0) - 16;
+                out[b * 32 + j + 16] = ((w[6 + j] >> 4) | xh1) - 16;
+            }
+            for (int j = 0; j < 32; j++) out[b * 32 + j] *= d;
+        }
+        return;
+    }
+    fang_panic("unsupported row dequant", __FILE__, __LINE__);
+}
+
 /* ------------------------------------------------------------------ */
 /* Terminal: raw mode and key reads                                    */
 /* ------------------------------------------------------------------ */

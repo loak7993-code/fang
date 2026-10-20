@@ -156,6 +156,21 @@ int64_t fang_llm_row_bytes(int64_t ggml_type, int64_t n);
 void* fang_llm_quant_q8(void* x, int64_t n);
 /* Integer row dot: quantized weights x Q8_0 activation. */
 double fang_llm_dot_q8(int64_t ggml_type, fang_str* blob, int64_t off, void* qx, int64_t n);
+/* Fused matvec: quantize x in C, dot every row (optionally with bias),
+   multithreaded. threads <= 1 runs single-threaded. */
+void fang_llm_matvec(int64_t t, fang_str* blob, int64_t base_off, int64_t rows,
+                     void* x, void* out, int64_t n, void* bias, int64_t threads);
+void fang_llm_matvec0(int64_t t, fang_str* blob, int64_t base_off, int64_t rows,
+                      void* x, void* out, int64_t n, int64_t threads);
+void fang_llm_rms_norm(void* x, void* w, void* out, int64_t n, double eps);
+void fang_llm_rope(void* x, int64_t pos, int64_t heads, int64_t head_dim, double freq_base);
+void fang_llm_kv_append(void* kcache, void* vcache, void* k, void* v, int64_t pos, int64_t kv_dim);
+void fang_llm_attention(void* q, void* kcache, void* vcache, int64_t pos,
+                        int64_t n_heads, int64_t n_kv_heads, int64_t head_dim, void* out);
+void fang_llm_silu_mul(void* gate, void* up, void* out, int64_t n);
+void fang_llm_add(void* a, void* b, void* out, int64_t n);
+int64_t fang_llm_argmax(void* logits, int64_t n);
+void fang_llm_dequant_row(int64_t t, fang_str* blob, int64_t off, void* out, int64_t n);
 /* Build a string from a list of byte values (0-255). */
 fang_str* fang_utf8_from_bytes(void* bytes);
 

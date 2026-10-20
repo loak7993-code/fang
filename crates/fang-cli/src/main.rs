@@ -189,6 +189,7 @@ fn cached_rt_object(release: bool) -> Result<PathBuf, String> {
     RT_H.hash(&mut h);
     cc_version.hash(&mut h);
     opt.hash(&mut h);
+    "march-native-v2".hash(&mut h);
     let key = format!("{:016x}", h.finish());
 
     let dir = std::env::temp_dir().join("fang-rt-cache");
@@ -207,6 +208,7 @@ fn cached_rt_object(release: bool) -> Result<PathBuf, String> {
     let status = Command::new("cc")
         .arg(opt)
         .arg("-std=c11")
+        .arg("-march=native")
         .arg("-I")
         .arg(&dir)
         .arg("-c")

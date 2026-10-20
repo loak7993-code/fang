@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.5.1] - 2026-10-20
+
+LLM engine performance: 1.06 to 6.35 tok/s (6x) on Qwen2.5-0.5B.
+
+- Fused inference kernels in the runtime: the whole matvec
+  (activation quantization with per-32-block scales, every row dot,
+  optional bias) is one C call per weight matrix, multithreaded
+  across cores through a persistent worker pool.
+- Full AVX2/FMA integer path for Q5_0 (shuffle-based nibble
+  expansion, maddubs pairing - the llama.cpp technique), Q8_0
+  (widen + madd_epi16), Q6_K / Q4_K / F32.
+- Attention, RoPE, RMSNorm, SwiGLU, argmax, KV append and residual
+  add all run as single C kernel calls; the Fang layer only
+  orchestrates per layer.
+- Per-token allocations eliminated: all activation buffers
+  preallocated once and reused; norm and bias tensors preloaded.
+- Persistent thread pool with an epoch-based completion barrier
+  (no counter resets; a lost-increment window in the reset-based
+  counter caused rare wrong outputs under heavy load).
+- Runtime cache now compiles with -march=native (it was silently
+  dropping to generic code: 5.4x kernel throughput loss).
+
 ## [1.5.0] - 2026-10-20
 
 Fang LLM: a GGUF inference engine, in Fang.
