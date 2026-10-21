@@ -191,6 +191,21 @@ fang run examples/chip8.fg rom.ch8            # play it
 fang run examples/chip8.fg rom.ch8 --frames N # headless run
 ```
 
+## LLM inference
+
+`examples/llm.fg` is a GGUF inference engine for Qwen2-style models,
+written in Fang with C kernels behind `extern`: a byte-level BPE
+tokenizer that matches llama.cpp token for token, fused AVX2 integer
+dot products for Q8_0, Q5_0, Q4_K and Q6_K weights, GQA attention, and
+a worker pool that keeps hot barriers between pipeline stages. One
+worker thread runs the whole thing at 13 tok/s on Qwen2.5-0.5B
+(Q4_K_M); four threads reach 18.5 tok/s, and every generated token is
+byte-identical to llama.cpp in greedy mode.
+
+```sh
+fang run examples/llm.fg model.gguf "say hello" --n 128
+```
+
 ## Every operating system
 
 Fang emits C and compiles it with the platform C compiler, so it goes

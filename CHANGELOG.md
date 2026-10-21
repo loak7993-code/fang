@@ -1,5 +1,64 @@
 # Changelog
 
+## [1.6.0] - 2026-10-21
+
+LLM engine: 6.35 to 18.5 tok/s (3x) on Qwen2.5-0.5B, single-thread
+3.6 to 13.0 tok/s, and three correctness bugs fixed.
+
+### Fixed
+
+- The BPE tokenizer emitted special-token ids before the text pieces
+  instead of interleaving them in prompt order, and skipped one byte
+  past each special token (<|im_start|> is 12 chars, <|im_end|> 10 -
+  the code advanced 13 for both). Both scrambled the chat template;
+  long generations degenerated into repeated template fragments.
+- Non-ASCII string literals were emitted with a codepoint-count
+  length instead of a byte length ("Ġ" is 2 bytes in UTF-8 but got
+  len 1), which corrupted every vocab lookup containing mapped
+  byte characters and dropped trailing bytes in concatenated
+  words. Spaces and newlines tokenized as "!" (id 0).
+- The sematic analyzer rejected a conditional return nested inside
+  an if branch ("not every path returns"), a false positive: only
+  function bodies must guarantee a return, branch blocks may
+  return conditionally.
+
+### Added
+
+- The Qwen2 pretokenizer at byte level: contractions, the
+  optional-single-character letter rule, one digit per piece,
+  space-attached punctuation runs, newline-run and trailing
+  whitespace rules. Token ids now match llama.cpp exactly on the
+  whole test battery (13/13 prompts, token for token).
+- The Q6_K and Q4_K AVX2 row-dot kernels (llama.cpp technique:
+  unsigned-nibble maddubs, scale shuffling, sub-block minimum
+  correction through per-16 activation byte sums). The scalar paths
+  ran at 178-470 M elem/s; the AVX2 kernels run at 7.5-8.0 G.
+- One C call per transformer layer (fang_llm_layer): rms, fused
+  qkv matvec, rope, KV append, attention, output projection,
+  second rms, fused gate/up matvec, SwiGLU, down projection.
+- Hot internal barriers: inside a layer sequence the workers stay
+  spinning between stages, so a whole token costs one condvar wake
+  instead of one per matvec (measured 5.06 ms to 0.12 ms per
+  dispatch).
+- Work-threshold dispatch: outside a layer sequence, matvecs below
+  ~7.5M elements run inline on the caller instead of paying a wake.
+
+### Changed
+
+- The worker pool defaults to nproc/2 - 1 workers. On this shared
+  box the old cores-1 default oversubscribed the scheduler: with
+  load 8-15 from other tenants, eight runnable threads turned every
+  barrier into a multi-millisecond wait for a preempted worker.
+  Four total threads (llama.cpp picks the same) measured fastest.
+- Attention score and value-accumulation kernels vectorized with
+  AVX2 double FMA; RoPE builds its angle table once per call;
+  quantization buffers are thread-local and grown on demand; row
+  dots prefetch the next weight row.
+- Verified: output byte-identical to llama.cpp (greedy, same
+  prompt), 6/6 identical long generations under load, 26 cargo
+  tests, clippy clean, 27/27 doc examples, 19/19 course checks.
+
+
 ## [1.5.1] - 2026-10-20
 
 LLM engine performance: 1.06 to 6.35 tok/s (6x) on Qwen2.5-0.5B.

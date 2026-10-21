@@ -1012,7 +1012,12 @@ fn infer_block_top(
     // A void "seen" means the function only bare-returns: falling off
     // the end is fine for it. The classic guard pattern
     // (`if bad: return`, then more statements) must not error.
-    if info.seen.as_ref().is_some_and(|t| !matches!(t, Ty::Void)) && !info.guaranteed {
+    // Branch blocks may conditionally return; only a function body
+    // must guarantee a return on every path.
+    if fn_top
+        && info.seen.as_ref().is_some_and(|t| !matches!(t, Ty::Void))
+        && !info.guaranteed
+    {
         a.errors.push(SemaError {
             msg: "not every path returns a value; add a return at the end or an else branch"
                 .to_string(),

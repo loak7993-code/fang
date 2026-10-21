@@ -147,30 +147,58 @@ void* fang_tcp_listen(int64_t port);
 void* fang_tcp_accept(void* srv);
 /* Read one HTTP request: headers plus Content-Length body. */
 fang_str* fang_tcp_recv_http(void* sock);
-/* LLM inference: row dot product against a double vector. ggml_type:
-   0 F32, 6 Q5_0, 8 Q8_0, 12 Q4_K, 14 Q6_K. */
-double fang_llm_dot(int64_t ggml_type, fang_str* blob, int64_t off, void* x, int64_t n);
-int64_t fang_llm_row_bytes(int64_t ggml_type, int64_t n);
-/* Quantize a list[float] activation to Q8_0 blocks; returns a
-   list[int] of byte values (34 per 32 elements). */
-void* fang_llm_quant_q8(void* x, int64_t n);
-/* Integer row dot: quantized weights x Q8_0 activation. */
-double fang_llm_dot_q8(int64_t ggml_type, fang_str* blob, int64_t off, void* qx, int64_t n);
-/* Fused matvec: quantize x in C, dot every row (optionally with bias),
-   multithreaded. threads <= 1 runs single-threaded. */
+/* LLM inference kernels. Quant types: 0 F32, 6 Q5_0, 8 Q8_0, 12 Q4_K,
+   14 Q6_K. Activations are quantized in C to Q8_0 per call and dotted
+   against the quantized weights with AVX2 integer kernels. */
+/* Fused matvec: quantize x once, dot every row (optional F32 bias
+   read from the blob at bias_off, -1 for none), multithreaded over
+   rows. threads <= 1 runs single-threaded. */
 void fang_llm_matvec(int64_t t, fang_str* blob, int64_t base_off, int64_t rows,
-                     void* x, void* out, int64_t n, void* bias, int64_t threads);
+                     void* x, void* out, int64_t n, int64_t bias_off, int64_t threads);
 void fang_llm_matvec0(int64_t t, fang_str* blob, int64_t base_off, int64_t rows,
                       void* x, void* out, int64_t n, int64_t threads);
+/* Two and three weight matrices dotted against ONE shared activation
+   in a single pool round-trip: one quantize, one dispatch. Bias
+   offsets are blob-relative F32 rows, -1 for none. */
+void fang_llm_matvec2(int64_t t1, int64_t t2, fang_str* blob,
+                      int64_t o1, int64_t r1, int64_t o2, int64_t r2,
+                      void* x, void* out1, void* out2, int64_t n, int64_t threads);
+void fang_llm_matvec3(int64_t t1, int64_t t2, int64_t t3, fang_str* blob,
+                      int64_t o1, int64_t r1, int64_t b1,
+                      int64_t o2, int64_t r2, int64_t b2,
+                      int64_t o3, int64_t r3, int64_t b3,
+                      void* x, void* out1, void* out2, void* out3,
+                      int64_t n, int64_t threads);
 void fang_llm_rms_norm(void* x, void* w, void* out, int64_t n, double eps);
 void fang_llm_rope(void* x, int64_t pos, int64_t heads, int64_t head_dim, double freq_base);
 void fang_llm_kv_append(void* kcache, void* vcache, void* k, void* v, int64_t pos, int64_t kv_dim);
+/* Causal attention over the KV cache, parallelized across heads. */
 void fang_llm_attention(void* q, void* kcache, void* vcache, int64_t pos,
-                        int64_t n_heads, int64_t n_kv_heads, int64_t head_dim, void* out);
+                        int64_t n_heads, int64_t n_kv_heads, int64_t head_dim,
+                        void* out, int64_t threads);
+/* One transformer layer: all parallel stages in one call with hot
+   internal barriers (one condvar wake per token instead of per
+   matvec). Norm weights are F32 rows of the blob. */
+void fang_llm_layer(fang_str* blob,
+                    int64_t hidden, int64_t kv_dim, int64_t ffn, int64_t pos,
+                    int64_t n_heads, int64_t n_kv_heads, int64_t head_dim,
+                    double freq_base, double eps, int64_t threads,
+                    int64_t norm1_off, int64_t norm2_off,
+                    int64_t tq, int64_t wq, int64_t bq,
+                    int64_t tk, int64_t wk, int64_t bk,
+                    int64_t tv, int64_t wv, int64_t bv,
+                    int64_t to, int64_t wo,
+                    int64_t tg, int64_t wg,
+                    int64_t tu, int64_t wu,
+                    int64_t td, int64_t wd,
+                    void* h, void* xn, void* q, void* k, void* v,
+                    void* kcache, void* vcache, void* attn_out,
+                    void* gate, void* up, void* act, void* xn2);
+/* End of a token's phase sequence. */
+void fang_pool_seq_end(void);
 void fang_llm_silu_mul(void* gate, void* up, void* out, int64_t n);
 void fang_llm_add(void* a, void* b, void* out, int64_t n);
 int64_t fang_llm_argmax(void* logits, int64_t n);
-void fang_llm_dequant_row(int64_t t, fang_str* blob, int64_t off, void* out, int64_t n);
 /* Build a string from a list of byte values (0-255). */
 fang_str* fang_utf8_from_bytes(void* bytes);
 

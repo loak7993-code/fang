@@ -643,7 +643,7 @@ impl<'a> Gen<'a> {
                     "    L{i} = fang_str_new(\"{text}\", {len}); L{i}->rc = FANG_RC_STATIC;",
                     i = i,
                     text = c_escape(text),
-                    len = text.chars().count()
+                    len = text.len()
                 )
                 .unwrap();
             }
@@ -817,7 +817,7 @@ impl<'a> Gen<'a> {
                 "    L{i} = fang_str_new(\"{text}\", {len}); L{i}->rc = FANG_RC_STATIC;",
                 i = i,
                 text = c_escape(text),
-                len = text.chars().count()
+                len = text.len()
             )
             .unwrap();
         }
@@ -1148,7 +1148,7 @@ impl<'a> Gen<'a> {
                     "    L{} = fang_str_new(\"{}\", {}); L{}->rc = FANG_RC_STATIC;",
                     i,
                     c_escape(text),
-                    text.chars().count(),
+                    text.len(),
                     i
                 )
                 .unwrap();

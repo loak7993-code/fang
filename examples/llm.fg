@@ -10,17 +10,13 @@ import os
 import math
 import time
 
-extern fn fang_llm_dot(t: int, blob: str, off: int, x: list[float], n: int) -> float from "fang_rt.h"
-
-extern fn fang_llm_row_bytes(t: int, n: int) -> int from "fang_rt.h"
-
-extern fn fang_llm_quant_q8(x: list[float], n: int) -> list[int] from "fang_rt.h"
-
-extern fn fang_llm_dot_q8(t: int, blob: str, off: int, qx: list[int], n: int) -> float from "fang_rt.h"
-
-extern fn fang_llm_matvec(t: int, blob: str, off: int, rows: int, x: list[float], out: list[float], n: int, bias: list[float], threads: int) from "fang_rt.h"
+extern fn fang_llm_matvec(t: int, blob: str, off: int, rows: int, x: list[float], out: list[float], n: int, bias_off: int, threads: int) from "fang_rt.h"
 
 extern fn fang_llm_matvec0(t: int, blob: str, off: int, rows: int, x: list[float], out: list[float], n: int, threads: int) from "fang_rt.h"
+
+extern fn fang_llm_matvec2(t1: int, t2: int, blob: str, o1: int, r1: int, o2: int, r2: int, x: list[float], out1: list[float], out2: list[float], n: int, threads: int) from "fang_rt.h"
+
+extern fn fang_llm_matvec3(t1: int, t2: int, t3: int, blob: str, o1: int, r1: int, b1: int, o2: int, r2: int, b2: int, o3: int, r3: int, b3: int, x: list[float], out1: list[float], out2: list[float], out3: list[float], n: int, threads: int) from "fang_rt.h"
 
 extern fn fang_llm_rms_norm(x: list[float], w: list[float], out: list[float], n: int, eps: float) from "fang_rt.h"
 
@@ -28,15 +24,17 @@ extern fn fang_llm_rope(x: list[float], pos: int, heads: int, head_dim: int, fre
 
 extern fn fang_llm_kv_append(kcache: list[float], vcache: list[float], k: list[float], v: list[float], pos: int, kv_dim: int) from "fang_rt.h"
 
-extern fn fang_llm_attention(q: list[float], kcache: list[float], vcache: list[float], pos: int, n_heads: int, n_kv_heads: int, head_dim: int, out: list[float]) from "fang_rt.h"
+extern fn fang_llm_attention(q: list[float], kcache: list[float], vcache: list[float], pos: int, n_heads: int, n_kv_heads: int, head_dim: int, out: list[float], threads: int) from "fang_rt.h"
+
+extern fn fang_llm_layer(blob: str, hidden: int, kv_dim: int, ffn: int, pos: int, n_heads: int, n_kv_heads: int, head_dim: int, freq_base: float, eps: float, threads: int, norm1: int, norm2: int, tq: int, wq: int, bq: int, tk: int, wk: int, bk: int, tv: int, wv: int, bv: int, to: int, wo: int, tg: int, wg: int, tu: int, wu: int, td: int, wd: int, h: list[float], xn: list[float], q: list[float], k: list[float], v: list[float], kcache: list[float], vcache: list[float], attn_out: list[float], gate: list[float], up: list[float], act: list[float], xn2: list[float]) from "fang_rt.h"
+
+extern fn fang_pool_seq_end() from "fang_rt.h"
 
 extern fn fang_llm_silu_mul(gate: list[float], up: list[float], out: list[float], n: int) from "fang_rt.h"
 
 extern fn fang_llm_add(a: list[float], b: list[float], out: list[float], n: int) from "fang_rt.h"
 
 extern fn fang_llm_argmax(logits: list[float], n: int) -> int from "fang_rt.h"
-
-extern fn fang_llm_dequant_row(t: int, blob: str, off: int, out: list[float], n: int) from "fang_rt.h"
 
 let threads = 8
 
@@ -218,7 +216,8 @@ fn load_model(path: str) -> Model:
       elif key == "tokenizer.ggml.merges":
         for k in 0..n:
           sl = u64_at(b, i)
-          m.merges[b.slice(i + 8, i + 8 + sl)] = k
+          # ranks stored +1 so rank 0 never collides with "missing" (0)
+          m.merges[b.slice(i + 8, i + 8 + sl)] = k + 1
           i = i + 8 + sl
       else:
         for k in 0..n:
@@ -279,15 +278,22 @@ fn b2u(b: int) -> str:
   char_table[256 + b]
 
 fn bpe_word(m: Model, word: str) -> list[int]:
+  # Words arriving here contain ASCII plus b2u-mapped chars; every
+  # mapped char is a 2-byte UTF-8 sequence, so syms split on that.
   syms: list[str] = []
-  for i in 0..len(word):
-    syms.push(word.slice(i, i + 1))
+  i = 0
+  while i < len(word):
+    n = 1
+    if byte_at(word, i) >= 192 and i + 1 < len(word):
+      n = 2
+    syms.push(word.slice(i, i + n))
+    i = i + n
   while true:
     best_rank = -1
     best_i = 0
     for i in 0..len(syms) - 1:
       r = m.merges[syms[i] + " " + syms[i + 1]]
-      if r != 0 and (best_rank < 0 or r < best_rank):
+      if r > 0 and (best_rank < 0 or r < best_rank):
         best_rank = r
         best_i = i
     if best_rank < 0:
@@ -307,54 +313,132 @@ fn bpe_word(m: Model, word: str) -> list[int]:
   ids
 
 fn bpe_encode(m: Model, text: str) -> list[int]:
-  # Special tokens split first: <|im_start|> and <|im_end|> are single
-  # vocab entries BPE can never build from bytes.
+  # <|im_start|> and <|im_end|> are single vocab entries BPE can never
+  # build from bytes. Split on them and emit ids in prompt order:
+  # each text piece is tokenized and pushed before the next special id.
   ids: list[int] = []
-  parts: list[str] = []
   rest = text
   while true:
     a = str.find_from(rest, 0, "<|im_start|>")
     b = str.find_from(rest, 0, "<|im_end|>")
     cut = -1
     which = 0
+    tlen = 0
     if a >= 0 and (b < 0 or a < b):
       cut = a
       which = 151644
+      tlen = 12
     elif b >= 0:
       cut = b
       which = 151645
+      tlen = 10
     if cut < 0:
-      parts.push(rest)
+      for t in bpe_text(m, rest):
+        ids.push(t)
       break
-    parts.push(rest.slice(0, cut))
-    ids.push(which)
-    rest = rest.slice(cut + 13, len(rest))
-  for part in parts:
-    for t in bpe_text(m, part):
+    for t in bpe_text(m, rest.slice(0, cut)):
       ids.push(t)
+    ids.push(which)
+    rest = rest.slice(cut + tlen, len(rest))
   ids
 
 fn bpe_text(m: Model, text: str) -> list[int]:
+  # Qwen2 pretokenizer (byte-level): contractions, letters with one
+  # optional leading non-letter, single digits, space-attached punct
+  # runs, newline runs, trailing-whitespace rules.
   ids: list[int] = []
-  cur = ""
-  for i in 0..len(text):
-    c = text.slice(i, i + 1)
-    if c == " ":
-      if len(cur) > 0:
-        for t in bpe_word(m, cur):
-          ids.push(t)
-      cur = "Ġ"
-    elif c == "\n":
-      if len(cur) > 0:
-        for t in bpe_word(m, cur):
-          ids.push(t)
-      cur = "Ċ"
-    else:
-      cur = cur + b2u(byte_at(c, 0))
-  if len(cur) > 0:
+  i = 0
+  n = len(text)
+  while i < n:
+    pl = next_piece(text, i, n)
+    word = text.slice(i, i + pl)
+    cur = ""
+    for b in 0..len(word):
+      cur = cur + b2u(byte_at(word, b))
     for t in bpe_word(m, cur):
       ids.push(t)
+    i = i + pl
   ids
+
+fn is_wsb(b: int) -> bool:
+  b == 32 or b == 9 or b == 10 or b == 13
+
+fn is_letter(b: int) -> bool:
+  # ASCII letters; other bytes are treated as letters too (CJK and
+  # most accented text is \p{L}; emoji will piece as letters, which
+  # only affects merge granularity, not correctness of the split).
+  (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b >= 128
+
+fn is_digitb(b: int) -> bool:
+  b >= 48 and b <= 57
+
+fn contraction_len(text: str, i: int, n: int) -> int:
+  # 's 't 'm 'd are 2 bytes, 're 've 'll are 3, case-insensitive.
+  if i + 1 >= n:
+    return 0
+  c1 = byte_at(text, i + 1) | 32
+  if c1 == 115 or c1 == 116 or c1 == 109 or c1 == 100:
+    return 2
+  if i + 2 < n:
+    c2 = byte_at(text, i + 2) | 32
+    if c1 == 114 and c2 == 101:
+      return 3
+    if c1 == 118 and c2 == 101:
+      return 3
+    if c1 == 108 and c2 == 108:
+      return 3
+  return 0
+
+fn next_piece(text: str, i: int, n: int) -> int:
+  c = byte_at(text, i)
+  if c == 39:
+    cl = contraction_len(text, i, n)
+    if cl > 0:
+      return cl
+  # letters, with one optional leading char that is not \r\n, letter
+  # or digit (space, tab and punctuation all qualify)
+  j = i
+  if not is_letter(c) and not is_digitb(c) and c != 10 and c != 13 and i + 1 < n:
+    j = i + 1
+  if j < n and is_letter(byte_at(text, j)):
+    k = j + 1
+    while k < n and is_letter(byte_at(text, k)):
+      k = k + 1
+    return k - i
+  # exactly one digit per piece
+  if is_digitb(c):
+    return 1
+  # space-attached punctuation run, then any trailing \r\n
+  j = i
+  if c == 32 and i + 1 < n:
+    j = i + 1
+  if j < n and not is_wsb(byte_at(text, j)) and not is_letter(byte_at(text, j)) and not is_digitb(byte_at(text, j)):
+    k = j + 1
+    while k < n and not is_wsb(byte_at(text, k)) and not is_letter(byte_at(text, k)) and not is_digitb(byte_at(text, k)):
+      k = k + 1
+    while k < n and (byte_at(text, k) == 10 or byte_at(text, k) == 13):
+      k = k + 1
+    return k - i
+  # whitespace: run containing \r\n ends after the newline run;
+  # otherwise \s+(?!\S) keeps all but the last char when a
+  # non-space follows, and a lone whitespace stands alone
+  if is_wsb(c):
+    k = i
+    while k < n and is_wsb(byte_at(text, k)):
+      k = k + 1
+    last = -1
+    for w in i..k:
+      if byte_at(text, w) == 10 or byte_at(text, w) == 13:
+        last = w
+    if last >= 0:
+      q = last + 1
+      while q < k and (byte_at(text, q) == 10 or byte_at(text, q) == 13):
+        q = q + 1
+      return q - i
+    if k < n and k - i >= 2:
+      return k - 1 - i
+    return k - i
+  return 1
 
 fn unmap(text: str) -> str:
   out: list[int] = []
@@ -392,18 +476,24 @@ fn make_cache(m: Model, ctx: int) -> Cache:
     v_layers.push(vbuf)
   Cache(k_layers, v_layers)
 
-fn rms_norm(x: list[float], w: list[float], eps: float) -> list[float]:
-  out: list[float] = []
-  for i in 0..len(x):
-    out.push(0.0)
-  fang_llm_rms_norm(x, w, out, len(x), eps)
-  out
+fn row_bytes(t: int, n: int) -> int:
+  if t == 6:
+    return n / 32 * 22
+  elif t == 8:
+    return n / 32 * 34
+  elif t == 12:
+    return n / 256 * 144
+  elif t == 14:
+    return n / 256 * 210
+  return n * 4
 
-fn load_f32_row(m: Model, name: str, row: int) -> list[float]:
+fn load_f32_row_into(m: Model, name: str, row: int, out: list[float]):
+  # reuse semantics: callers may pass a persistent buffer
+  while len(out) > 0:
+    out.pop()
   t = m.tensor_type[name]
-  off = m.tensor_off[name] + row * fang_llm_row_bytes(t, m.tensor_row[name])
+  off = m.tensor_off[name] + row * row_bytes(t, m.tensor_row[name])
   n = m.tensor_row[name]
-  out: list[float] = []
   if t == 0:
     for i in 0..n:
       out.push(f32_at(m.blob, off + i * 4))
@@ -435,61 +525,13 @@ fn load_f32_row(m: Model, name: str, row: int) -> list[float]:
   else:
     print("load_row: unsupported type", t, "for", name)
     os.exit(1)
-  out
 
-fn matvec(m: Model, name: str, x: list[float], rows: int) -> list[float]:
-  t = m.tensor_type[name]
-  row_n = m.tensor_row[name]
-  base = m.tensor_off[name]
+fn load_f32_row(m: Model, name: str, row: int) -> list[float]:
   out: list[float] = []
-  for r in 0..rows:
-    out.push(0.0)
-  fang_llm_matvec0(t, m.blob, base, rows, x, out, row_n, threads)
+  load_f32_row_into(m, name, row, out)
   out
-
-fn matvec_bias(m: Model, wname: str, bname: str, x: list[float], rows: int) -> list[float]:
-  t = m.tensor_type[wname]
-  row_n = m.tensor_row[wname]
-  base = m.tensor_off[wname]
-  bias = load_f32_row(m, bname, 0)
-  out: list[float] = []
-  for r in 0..rows:
-    out.push(0.0)
-  fang_llm_matvec(t, m.blob, base, rows, x, out, row_n, bias, threads)
-  out
-
-fn softmax_inplace(x: list[float]):
-  mx = x[0]
-  for i in 1..len(x):
-    if x[i] > mx:
-      mx = x[i]
-  s = 0.0
-  for i in 0..len(x):
-    x[i] = math.exp(x[i] - mx)
-    s = s + x[i]
-  for i in 0..len(x):
-    x[i] = x[i] / s
-
-let rope_freq: list[float] = []
-
-fn init_rope(m: Model):
-  for i in 0..m.head_dim / 2:
-    rope_freq.push(math.pow(m.rope_base, -2.0 * i / m.head_dim))
-
-fn apply_rope(x: list[float], base_off: int, dim: int, pos: int):
-  half = dim / 2
-  for i in 0..half:
-    ang = pos * rope_freq[i]
-    c = math.cos(ang)
-    s = math.sin(ang)
-    x1 = x[base_off + i]
-    x2 = x[base_off + half + i]
-    x[base_off + i] = x1 * c - x2 * s
-    x[base_off + half + i] = x2 * c + x1 * s
 
 struct Weights:
-  norms: list[list[float]]
-  biases: list[list[float]]
   final_norm: list[float]
 
 struct Bufs:
@@ -513,93 +555,99 @@ fn zeros(n: int) -> list[float]:
   out
 
 fn load_weights(m: Model) -> Weights:
-  norms: list[list[float]] = []
-  biases: list[list[float]] = []
-  for layer in 0..m.n_layers:
-    p = "blk." + str(layer) + "."
-    norms.push(load_f32_row(m, p + "attn_norm.weight", 0))
-    norms.push(load_f32_row(m, p + "ffn_norm.weight", 0))
-    biases.push(load_f32_row(m, p + "attn_q.bias", 0))
-    biases.push(load_f32_row(m, p + "attn_k.bias", 0))
-    biases.push(load_f32_row(m, p + "attn_v.bias", 0))
-  Weights(norms, biases, load_f32_row(m, "output_norm.weight", 0))
+  Weights(load_f32_row(m, "output_norm.weight", 0))
 
 fn make_bufs(m: Model) -> Bufs:
   kv_dim = m.n_kv_heads * m.head_dim
-  Bufs(zeros(m.hidden), zeros(m.hidden), zeros(m.hidden), zeros(kv_dim), zeros(kv_dim), zeros(m.hidden), zeros(m.hidden), zeros(m.ffn), zeros(m.ffn), zeros(m.ffn), zeros(m.hidden), zeros(m.vocab))
-  # Matvec into a caller-provided buffer (no allocation).
+  Bufs(zeros(m.hidden), zeros(m.hidden), zeros(m.hidden), zeros(m.hidden), zeros(kv_dim), zeros(kv_dim), zeros(m.hidden), zeros(m.ffn), zeros(m.ffn), zeros(m.ffn), zeros(m.hidden), zeros(m.vocab))
 
-fn matvec_to(m: Model, name: str, x: list[float], out: list[float], rows: int):
-  t = m.tensor_type[name]
-  row_n = m.tensor_row[name]
-  base = m.tensor_off[name]
-  fang_llm_matvec0(t, m.blob, base, rows, x, out, row_n, threads)
+# Per-layer tensor offsets and types, resolved once so the token loop
+# never touches the string-keyed tensor dicts again.
+struct Plan:
+  n1: list[int]
+  n2: list[int]
+  tq: list[int]
+  tk: list[int]
+  tv: list[int]
+  wq: list[int]
+  wk: list[int]
+  wv: list[int]
+  bq: list[int]
+  bk: list[int]
+  bv: list[int]
+  wo: list[int]
+  to: list[int]
+  tg: list[int]
+  tu: list[int]
+  wg: list[int]
+  wu: list[int]
+  wd: list[int]
+  td: list[int]
+  wout: int
+  tout: int
+  bout: int
 
-fn matvec_bias_to(m: Model, name: str, bias: list[float], x: list[float], out: list[float], rows: int):
-  t = m.tensor_type[name]
-  row_n = m.tensor_row[name]
-  base = m.tensor_off[name]
-  fang_llm_matvec(t, m.blob, base, rows, x, out, row_n, bias, threads)
-
-fn forward(m: Model, cache: Cache, w: Weights, b: Bufs, token: int, pos: int):
-  h = load_f32_row(m, "token_embd.weight", token)
-  kv_dim = m.n_kv_heads * m.head_dim
-  q_span = m.n_heads / m.n_kv_heads
+fn build_plan(m: Model) -> Plan:
+  n1: list[int] = []
+  n2: list[int] = []
+  tq: list[int] = []
+  tk: list[int] = []
+  tv: list[int] = []
+  wq: list[int] = []
+  wk: list[int] = []
+  wv: list[int] = []
+  bq: list[int] = []
+  bk: list[int] = []
+  bv: list[int] = []
+  wo: list[int] = []
+  to: list[int] = []
+  tg: list[int] = []
+  tu: list[int] = []
+  wg: list[int] = []
+  wu: list[int] = []
+  wd: list[int] = []
+  td: list[int] = []
   for layer in 0..m.n_layers:
-    p = "blk." + str(layer) + "."
-    xn = rms_norm(h, load_f32_row(m, p + "attn_norm.weight", 0), m.rms_eps)
-    q = matvec_bias(m, p + "attn_q.weight", p + "attn_q.bias", xn, m.hidden)
-    k = matvec_bias(m, p + "attn_k.weight", p + "attn_k.bias", xn, kv_dim)
-    v = matvec_bias(m, p + "attn_v.weight", p + "attn_v.bias", xn, kv_dim)
-    for head in 0..m.n_heads:
-      apply_rope(q, head * m.head_dim, m.head_dim, pos)
-    for kvh in 0..m.n_kv_heads:
-      apply_rope(k, kvh * m.head_dim, m.head_dim, pos)
-    koff = pos * kv_dim
-    for i in 0..kv_dim:
-      cache.k[layer][koff + i] = k[i]
-      cache.v[layer][koff + i] = v[i]
-    attn_out: list[float] = []
-    scale = 1.0 / math.sqrt(m.head_dim * 1.0)
-    for head in 0..m.n_heads:
-      kvh = head / q_span
-      scores: list[float] = []
-      for t in 0..pos + 1:
-        sk = 0.0
-        for i in 0..m.head_dim:
-          sk = sk + q[head * m.head_dim + i] * cache.k[layer][t * kv_dim + kvh * m.head_dim + i]
-        scores.push(sk * scale)
-      softmax_inplace(scores)
-      for i in 0..m.head_dim:
-        acc = 0.0
-        for t in 0..pos + 1:
-          acc = acc + scores[t] * cache.v[layer][t * kv_dim + kvh * m.head_dim + i]
-        attn_out.push(acc)
-    proj = matvec(m, p + "attn_output.weight", attn_out, m.hidden)
-    for i in 0..m.hidden:
-      h[i] = h[i] + proj[i]
-    xn = rms_norm(h, load_f32_row(m, p + "ffn_norm.weight", 0), m.rms_eps)
-    gate = matvec(m, p + "ffn_gate.weight", xn, m.ffn)
-    up = matvec(m, p + "ffn_up.weight", xn, m.ffn)
-    act: list[float] = []
-    for i in 0..m.ffn:
-      g = gate[i]
-      act.push(g / (1.0 + math.exp(-g)) * up[i])
-    down = matvec(m, p + "ffn_down.weight", act, m.hidden)
-    for i in 0..m.hidden:
-      h[i] = h[i] + down[i]
-  h = rms_norm(h, load_f32_row(m, "output_norm.weight", 0), m.rms_eps)
-  matvec(m, "output.weight", h, m.vocab)
+    pre = "blk." + str(layer) + "."
+    n1.push(m.tensor_off[pre + "attn_norm.weight"])
+    n2.push(m.tensor_off[pre + "ffn_norm.weight"])
+    tq.push(m.tensor_type[pre + "attn_q.weight"])
+    tk.push(m.tensor_type[pre + "attn_k.weight"])
+    tv.push(m.tensor_type[pre + "attn_v.weight"])
+    wq.push(m.tensor_off[pre + "attn_q.weight"])
+    wk.push(m.tensor_off[pre + "attn_k.weight"])
+    wv.push(m.tensor_off[pre + "attn_v.weight"])
+    bq.push(m.tensor_off[pre + "attn_q.bias"])
+    bk.push(m.tensor_off[pre + "attn_k.bias"])
+    bv.push(m.tensor_off[pre + "attn_v.bias"])
+    wo.push(m.tensor_off[pre + "attn_output.weight"])
+    to.push(m.tensor_type[pre + "attn_output.weight"])
+    tg.push(m.tensor_type[pre + "ffn_gate.weight"])
+    tu.push(m.tensor_type[pre + "ffn_up.weight"])
+    wg.push(m.tensor_off[pre + "ffn_gate.weight"])
+    wu.push(m.tensor_off[pre + "ffn_up.weight"])
+    wd.push(m.tensor_off[pre + "ffn_down.weight"])
+    td.push(m.tensor_type[pre + "ffn_down.weight"])
+  # the lm_head has no bias tensor in qwen2 GGUFs; a dict miss would
+  # resolve to offset 0 (the file header), so pass -1 = no bias
+  Plan(n1, n2, tq, tk, tv, wq, wk, wv, bq, bk, bv, wo, to, tg, tu, wg, wu, wd, td, m.tensor_off["output.weight"], m.tensor_type["output.weight"], -1)
+
+# One forward pass: embedding dequant, then per layer rms_norm, fused
+# qkv matvec, rope, KV append, attention, output projection, SwiGLU,
+# down projection. Every kernel runs in C; buffers are preallocated.
+fn forward(m: Model, cache: Cache, w: Weights, b: Bufs, pl: Plan, token: int, pos: int) -> int:
+  kv_dim = m.n_kv_heads * m.head_dim
+  load_f32_row_into(m, "token_embd.weight", token, b.h)
+  for layer in 0..m.n_layers:
+    fang_llm_layer(m.blob, m.hidden, kv_dim, m.ffn, pos, m.n_heads, m.n_kv_heads, m.head_dim, m.rope_base, m.rms_eps, threads, pl.n1[layer], pl.n2[layer], pl.tq[layer], pl.wq[layer], pl.bq[layer], pl.tk[layer], pl.wk[layer], pl.bk[layer], pl.tv[layer], pl.wv[layer], pl.bv[layer], pl.to[layer], pl.wo[layer], pl.tg[layer], pl.wg[layer], pl.tu[layer], pl.wu[layer], pl.td[layer], pl.wd[layer], b.h, b.xn, b.q, b.k, b.v, cache.k[layer], cache.v[layer], b.attn_out, b.gate, b.up, b.act, b.xn2)
+  fang_llm_rms_norm(b.h, w.final_norm, b.xn, m.hidden, m.rms_eps)
+  fang_llm_matvec(pl.tout, m.blob, pl.wout, m.vocab, b.xn, b.logits, m.hidden, pl.bout, threads)
+  fang_pool_seq_end()
+  fang_llm_argmax(b.logits, m.vocab)
   # ---- sampling ----
 
 fn sample_greedy(logits: list[float]) -> int:
-  best = 0
-  bv = logits[0]
-  for i in 1..len(logits):
-    if logits[i] > bv:
-      bv = logits[i]
-      best = i
-  best
+  fang_llm_argmax(logits, len(logits))
 
 fn sample_temp(logits: list[float], temp: float) -> int:
   mx = logits[0]
@@ -667,30 +715,29 @@ fn main():
   print("loaded", model_path, "in", time.now() - t_load, "s: layers", m.n_layers, "hidden", m.hidden, "vocab", m.vocab)
   cache = make_cache(m, 2048)
   init_char_cache()
-  init_rope(m)
   chat = "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n"
   ids = bpe_encode(m, chat)
   print("prompt:", len(ids), "tokens")
   w = load_weights(m)
   bufs = make_bufs(m)
+  pl = build_plan(m)
   t0 = time.now()
-  logits: list[float] = []
   pos = 0
+  last = 0
   for tok in ids:
-    logits = forward(m, cache, w, bufs, tok, pos)
+    last = forward(m, cache, w, bufs, pl, tok, pos)
     pos = pos + 1
-  last = sample_greedy(logits)
   gen = 0
   while gen < n_gen:
     if last == m.eos:
       break
     fang_print_raw(unmap(m.vocab_str[last]))
-    logits = forward(m, cache, w, bufs, last, pos)
+    last = forward(m, cache, w, bufs, pl, last, pos)
     pos = pos + 1
     if temp > 0.0:
-      last = sample_temp(logits, temp)
+      last = sample_temp(bufs.logits, temp)
     else:
-      last = sample_greedy(logits)
+      last = sample_greedy(bufs.logits)
     gen = gen + 1
   print("")
   dt = time.now() - t0
